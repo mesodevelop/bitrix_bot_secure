@@ -98,20 +98,21 @@ def oauth_callback():
 # ----------------------
 # Вспомогательные функции: чтение токена и вызовы Bitrix REST
 # ----------------------
+
 def load_oauth_tokens():
     try:
         with open("token.json", "r", encoding="utf-8") as f:
             data = json.load(f)
         access_token = data.get("access_token")
         domain = data.get("domain") or BITRIX_DOMAIN
-        return access_token, domain
+        return access_token, domain, data
     except Exception as e:
         print("⚠️ Не удалось загрузить token.json:", e)
-        return None, None
+        return None, None, None
 
 
 def bitrix_call(method: str, payload: dict):
-    access_token, domain = load_oauth_tokens()
+    access_token, domain, _ = load_oauth_tokens()
     if not access_token or not domain:
         return None, {"error": "missing_tokens", "error_description": "Нет OAuth токенов или домена"}
     url = f"{domain}/rest/{method}"
@@ -124,6 +125,21 @@ def bitrix_call(method: str, payload: dict):
         return data.get("result", data), None
     except Exception as e:
         return None, {"error": "request_failed", "error_description": str(e)}
+
+
+# ----------------------
+# Статус OAuth: есть ли токен и какой домен
+# ----------------------
+@app.route("/oauth/status", methods=["GET"])
+def oauth_status():
+    access_token, domain, raw = load_oauth_tokens()
+    return jsonify({
+        "has_access_token": bool(access_token),
+        "domain": domain or BITRIX_DOMAIN,
+        "token_saved": bool(raw),
+        "expires_in": (raw or {}).get("expires_in"),
+        "member_id": (raw or {}).get("member_id"),
+    })
 
 
 # ----------------------
