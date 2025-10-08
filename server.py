@@ -2,8 +2,7 @@ from flask import Flask
 import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-import os
-import asyncio
+import asyncio, threading, os
 
 app = Flask(__name__)
 
@@ -23,8 +22,8 @@ async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
     r = requests.get(WEBHOOK_URL + "user.current.json")
     data = r.json()
     if "result" in data:
-        user = data["result"]
-        msg = f"👤 {user.get('NAME', '')} {user.get('LAST_NAME', '')}\nEmail: {user.get('EMAIL', '')}"
+        u = data["result"]
+        msg = f"👤 {u.get('NAME','')} {u.get('LAST_NAME','')}\nEmail: {u.get('EMAIL','')}"
     else:
         msg = f"Ошибка: {data}"
     await update.message.reply_text(msg)
@@ -42,27 +41,26 @@ async def leads(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = f"Ошибка: {data}"
     await update.message.reply_text(msg)
 
-# ---------- Flask ----------
+# ---------- Flask routes ----------
 
 @app.route("/")
 def index():
     return "🤖 Telegram–Bitrix бот работает!"
 
-# ---------- Main ----------
+# ---------- Telegram bot launcher ----------
 
-async def main():
+def start_bot():
+    asyncio.set_event_loop(asyncio.new_event_loop())  # создаём event loop для потока
     app_tg = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app_tg.add_handler(CommandHandler("start", start))
     app_tg.add_handler(CommandHandler("me", me))
     app_tg.add_handler(CommandHandler("leads", leads))
+    app_tg.run_polling()
 
-    # Запускаем Flask в отдельном потоке событий
-    loop = asyncio.get_event_loop()
-    from threading import Thread
-    Thread(target=lambda: app.run(host="0.0.0.0", port=10000)).start()
-
-    # Запускаем Telegram polling (основной asyncio loop)
-    await app_tg.run_polling()
+# ---------- Main ----------
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Запускаем Telegram-бота в отдельном потоке
+    threading.Thread(target=start_bot, daemon=True).start()
+    # Запускаем Flask-сервер (Render ожидает прослушку порта)
+    app.run(host="0.0.0.0", port=10000)
