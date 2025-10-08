@@ -12,31 +12,36 @@ BITRIX_DOMAIN = "https://dom.mesopharm.ru"
 REDIRECT_URI = "https://bitrix-bot-537z.onrender.com/oauth/bitrix/callback"
 
 
-# 🧠 Универсальный логгер всех входящих запросов
+# 🧠 Лог всех запросов
 @app.before_request
 def log_request_info():
     print("\n--- 📩 Новый запрос ---")
     print(f"⏰ Время: {datetime.now()}")
     print(f"➡️ Метод: {request.method}")
     print(f"➡️ URL: {request.url}")
-    print(f"➡️ Заголовки: {dict(request.headers)}")
     if request.data:
         print(f"➡️ Тело запроса: {request.data.decode('utf-8', errors='ignore')}")
     print("----------------------\n")
 
 
-# 🟢 Проверка сервера
-@app.route("/")
-def index():
+# 🟢 Корневой маршрут (Битрикс шлёт POST сюда)
+@app.route("/", methods=["GET", "POST"])
+def root():
+    """
+    Битрикс вызывает этот путь при установке приложения.
+    """
+    if request.method == "POST":
+        domain = request.args.get("DOMAIN")
+        app_sid = request.args.get("APP_SID")
+        print(f"📦 Установка приложения с домена: {domain}, APP_SID={app_sid}")
+        return "✅ Приложение получило POST-запрос от Bitrix", 200
+
     return "✅ Bitrix Bot Server работает!"
 
 
-# 🚀 Маршрут установки
-@app.route("/install", methods=["GET", "POST"])
+# 🚀 Ручная установка (GET)
+@app.route("/install")
 def install():
-    """
-    При установке приложения Битрикс направляет пользователя сюда.
-    """
     if not CLIENT_ID:
         return "Ошибка: переменная окружения BITRIX_CLIENT_ID не задана", 500
 
@@ -50,12 +55,9 @@ def install():
     return redirect(auth_url)
 
 
-# 🔄 Callback от Битрикс (GET или POST)
+# 🔄 Callback от Bitrix (GET или POST)
 @app.route("/oauth/bitrix/callback", methods=["GET", "POST"])
 def oauth_callback():
-    """
-    Битрикс возвращает code сюда.
-    """
     code = request.args.get("code") or request.form.get("code")
 
     if not code:
@@ -77,20 +79,13 @@ def oauth_callback():
         print(f"📨 Ответ Bitrix: {r.text}")
         result = r.json()
 
-        # 💾 Сохраняем токен в файл
+        # 💾 Сохраняем токен
         with open("token.json", "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
 
         return jsonify(result)
-
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
-# 🔍 Фолбэк на все неожиданные пути (для отладки)
-@app.route("/<path:unknown>", methods=["GET", "POST"])
-def catch_all(unknown):
-    return f"Путь '{unknown}' не обрабатывается этим сервером.", 404
 
 
 if __name__ == "__main__":
