@@ -41,8 +41,11 @@ def callback():
     try:
         r = requests.post(token_url, data=data, timeout=10)
         if r.status_code != 200:
-            return f"Ошибка от портала Bitrix: {r.status_code} {r.text}", 500
+            return f"Ошибка от Bitrix: {r.status_code} {r.text}", 500
+
+        # Выводим ответ Bitrix прямо на страницу
         return f"<h3>Access Token получен!</h3><pre>{r.text}</pre>"
+
     except Exception as e:
         return f"Ошибка при запросе токена: {str(e)}", 500
 
