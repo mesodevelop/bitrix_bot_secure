@@ -1,65 +1,49 @@
-from flask import Flask
+from flask import Flask, request
 import requests
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-import asyncio, threading, os
 
 app = Flask(__name__)
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-WEBHOOK_URL = "https://dom.mesopharm.ru/rest/19508/4mi5yvzezp02hiit/"
-
-# ---------- Telegram handlers ----------
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 Привет! Я бот Bitrix.\n"
-        "/me — мой профиль\n"
-        "/leads — список лидов"
-    )
-
-async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    r = requests.get(WEBHOOK_URL + "user.current.json")
-    data = r.json()
-    if "result" in data:
-        u = data["result"]
-        msg = f"👤 {u.get('NAME','')} {u.get('LAST_NAME','')}\nEmail: {u.get('EMAIL','')}"
-    else:
-        msg = f"Ошибка: {data}"
-    await update.message.reply_text(msg)
-
-async def leads(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    r = requests.get(WEBHOOK_URL + "crm.lead.list.json")
-    data = r.json()
-    if "result" in data:
-        leads = data["result"]
-        if not leads:
-            await update.message.reply_text("Нет лидов.")
-            return
-        msg = "📋 Лиды:\n" + "\n".join([f"{l['ID']}: {l['TITLE']}" for l in leads[:10]])
-    else:
-        msg = f"Ошибка: {data}"
-    await update.message.reply_text(msg)
-
-# ---------- Flask routes ----------
+CLIENT_ID = os.getenv("BITRIX_CLIENT_ID")
+CLIENT_SECRET = os.getenv("BITRIX_CLIENT_SECRET")
+REDIRECT_URI = "https://bitrix-bot-537z.onrender.com/oauth/bitrix/callback"
+BITRIX_DOMAIN = "https://dom.mesopharm.ru"  # корпоративный портал
 
 @app.route("/")
 def index():
-    return "🤖 Telegram–Bitrix бот работает!"
+    return '<a href="/auth">Авторизоваться через Bitrix</a>'
 
-# ---------- Telegram bot launcher ----------
+@app.route("/auth")
+def auth():
+    url = (
+        f"{BITRIX_DOMAIN}/oauth/authorize/"
+        f"?client_id={CLIENT_ID}"
+        f"&response_type=code"
+        f"&redirect_uri={REDIRECT_URI}"
+    )
+    return f'<a href="{url}">Перейти к авторизации</a>'
 
-def start_bot():
-    asyncio.set_event_loop(asyncio.new_event_loop())  # отдельный loop для потока
-    app_tg = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app_tg.add_handler(CommandHandler("start", start))
-    app_tg.add_handler(CommandHandler("me", me))
-    app_tg.add_handler(CommandHandler("leads", leads))
-    # ✅ ключевое: не ловим сигналы в потоке
-    app_tg.run_polling(stop_signals=None)
+@app.route("/oauth/bitrix/callback")
+def callback():
+    code = request.args.get("code")
+    if not code:
+        return "Ошибка: не получен параметр code", 400
 
-# ---------- Main ----------
+    token_url = f"{BITRIX_DOMAIN}/oauth/token/"
+    data = {
+        "grant_type": "authorization_code",
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "redirect_uri": REDIRECT_URI,
+        "code": code,
+    }
+
+    try:
+        r = requests.post(token_url, data=data, timeout=10)
+        if r.status_code != 200:
+            return f"Ошибка от портала Bitrix: {r.status_code} {r.text}", 500
+        return f"<h3>Access Token получен!</h3><pre>{r.text}</pre>"
+    except Exception as e:
+        return f"Ошибка при запросе токена: {str(e)}", 500
 
 if __name__ == "__main__":
-    threading.Thread(target=start_bot, daemon=True).start()
     app.run(host="0.0.0.0", port=10000)
