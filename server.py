@@ -14,7 +14,12 @@ WEBHOOK_URL = "https://dom.mesopharm.ru/rest/19508/4mi5yvzezp02hiit/"  # тво�
 # ---------- Telegram-бот ----------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Привет! Я бот Bitrix.\nКоманды:\n/я — мой профиль\n/лиды — список лидов")
+    await update.message.reply_text(
+        "👋 Привет! Я бот Bitrix.\n"
+        "Команды:\n"
+        "/me — мой профиль\n"
+        "/leads — список лидов"
+    )
 
 async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
     r = requests.get(WEBHOOK_URL + "user.current.json")
@@ -44,8 +49,8 @@ async def leads(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def start_bot():
     app_tg = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app_tg.add_handler(CommandHandler("start", start))
-    app_tg.add_handler(CommandHandler("я", me))
-    app_tg.add_handler(CommandHandler("лиды", leads))
+    app_tg.add_handler(CommandHandler("me", me))      # ✅ вместо "я"
+    app_tg.add_handler(CommandHandler("leads", leads))  # ✅ вместо "лиды"
     app_tg.run_polling()
 
 @app.route("/")
