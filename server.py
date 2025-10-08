@@ -64,10 +64,13 @@ def install():
 @app.route("/oauth/bitrix/callback", methods=["GET", "POST"])
 def oauth_callback():
     code = request.args.get("code") or request.form.get("code")
+    cb_domain = request.args.get("domain")  # dom.mesopharm.ru
+    member_id = request.args.get("member_id")
 
     if not code:
         return "❌ Ошибка: отсутствует параметр code", 400
 
+    # Используем токен-эндпоинт портала
     token_url = f"{BITRIX_DOMAIN}/oauth/token/"
 
     data = {
@@ -79,15 +82,27 @@ def oauth_callback():
     }
 
     print(f"🔑 Отправляем запрос на получение токена: {token_url}")
-    r = requests.post(token_url, data=data, timeout=10)
+    try:
+        r = requests.post(token_url, data=data, timeout=15)
+    except Exception as e:
+        return jsonify({"error": "request_failed", "error_description": str(e)}), 502
+
     print("Ответ сервера Bitrix (raw):", r.text)
+
+    if r.status_code != 200:
+        return jsonify({"error": "token_exchange_failed", "status": r.status_code, "response": r.text}), 502
+
     try:
         result = r.json()
     except json.JSONDecodeError:
         return {"error": "Не удалось распарсить JSON", "response": r.text}, 500
 
+    if cb_domain and not result.get("domain"):
+        result["domain"] = f"https://{cb_domain}"
+    if member_id and not result.get("member_id"):
+        result["member_id"] = member_id
+
     try:
-        # Сохраняем токен
         with open("token.json", "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
         return jsonify(result)
@@ -156,7 +171,6 @@ def telegram_webhook():
     if not chat_id:
         return jsonify({"ok": True})
 
-    # Простейшая логика: текст -> задача в Bitrix
     title = text or "Обращение из Telegram"
     description = f"Источник: Telegram chat_id={chat_id}\n\nТекст: {text}"
 
