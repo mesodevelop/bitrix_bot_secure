@@ -7,7 +7,7 @@ app = Flask(__name__)
 CLIENT_ID = os.getenv("BITRIX_CLIENT_ID")
 CLIENT_SECRET = os.getenv("BITRIX_CLIENT_SECRET")
 REDIRECT_URI = "https://bitrix-bot-537z.onrender.com/oauth/bitrix/callback"
-BITRIX_DOMAIN = "https://dom.mesopharm.ru"  # корпоративный портал
+BITRIX_DOMAIN = "dom.mesopharm.ru"  # корпоративный портал
 
 @app.route("/")
 def index():
@@ -39,7 +39,8 @@ def callback():
     }
 
     try:
-        r = requests.post(token_url, data=data, timeout=10)
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        r = requests.post(token_url, data=data, headers=headers, timeout=10)
 
         # Отладка — выводим всю информацию о запросе
         debug_info = f"""
