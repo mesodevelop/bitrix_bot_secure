@@ -50,17 +50,16 @@ def index():
 # ---------- Telegram bot launcher ----------
 
 def start_bot():
-    asyncio.set_event_loop(asyncio.new_event_loop())  # создаём event loop для потока
+    asyncio.set_event_loop(asyncio.new_event_loop())  # отдельный loop для потока
     app_tg = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app_tg.add_handler(CommandHandler("start", start))
     app_tg.add_handler(CommandHandler("me", me))
     app_tg.add_handler(CommandHandler("leads", leads))
-    app_tg.run_polling()
+    # ✅ ключевое: не ловим сигналы в потоке
+    app_tg.run_polling(stop_signals=None)
 
 # ---------- Main ----------
 
 if __name__ == "__main__":
-    # Запускаем Telegram-бота в отдельном потоке
     threading.Thread(target=start_bot, daemon=True).start()
-    # Запускаем Flask-сервер (Render ожидает прослушку порта)
     app.run(host="0.0.0.0", port=10000)
