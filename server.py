@@ -1,26 +1,41 @@
 from flask import Flask, request, redirect, jsonify
 import requests
 import os
+import json
+from datetime import datetime
 
 app = Flask(__name__)
 
-# Загружаем параметры из переменных окружения
 CLIENT_ID = os.getenv("BITRIX_CLIENT_ID")
 CLIENT_SECRET = os.getenv("BITRIX_CLIENT_SECRET")
-
-# Твой домен Битрикс24
 BITRIX_DOMAIN = "https://dom.mesopharm.ru"
-
-# URL, куда Битрикс вернет code
 REDIRECT_URI = "https://bitrix-bot-537z.onrender.com/oauth/bitrix/callback"
 
 
-# 1️⃣ Маршрут для первоначальной установки
-@app.route("/install")
+# 🧠 Универсальный логгер всех входящих запросов
+@app.before_request
+def log_request_info():
+    print("\n--- 📩 Новый запрос ---")
+    print(f"⏰ Время: {datetime.now()}")
+    print(f"➡️ Метод: {request.method}")
+    print(f"➡️ URL: {request.url}")
+    print(f"➡️ Заголовки: {dict(request.headers)}")
+    if request.data:
+        print(f"➡️ Тело запроса: {request.data.decode('utf-8', errors='ignore')}")
+    print("----------------------\n")
+
+
+# 🟢 Проверка сервера
+@app.route("/")
+def index():
+    return "✅ Bitrix Bot Server работает!"
+
+
+# 🚀 Маршрут установки
+@app.route("/install", methods=["GET", "POST"])
 def install():
     """
-    Пользователь заходит на этот путь при установке приложения.
-    Его нужно перенаправить на форму авторизации Битрикс24.
+    При установке приложения Битрикс направляет пользователя сюда.
     """
     if not CLIENT_ID:
         return "Ошибка: переменная окружения BITRIX_CLIENT_ID не задана", 500
@@ -31,21 +46,20 @@ def install():
         f"&response_type=code"
         f"&redirect_uri={REDIRECT_URI}"
     )
-
+    print(f"🔗 Перенаправляем на авторизацию: {auth_url}")
     return redirect(auth_url)
 
 
-# 2️⃣ Callback — сюда Битрикс вернет временный код авторизации
-@app.route("/oauth/bitrix/callback")
+# 🔄 Callback от Битрикс (GET или POST)
+@app.route("/oauth/bitrix/callback", methods=["GET", "POST"])
 def oauth_callback():
     """
-    После авторизации пользователь возвращается сюда с параметром ?code=...
-    Обмениваем этот code на access_token и refresh_token.
+    Битрикс возвращает code сюда.
     """
-    code = request.args.get("code")
+    code = request.args.get("code") or request.form.get("code")
 
     if not code:
-        return "Ошибка: отсутствует параметр code", 400
+        return "❌ Ошибка: отсутствует параметр code", 400
 
     token_url = f"{BITRIX_DOMAIN}/oauth/token/"
 
@@ -57,17 +71,26 @@ def oauth_callback():
         "code": code,
     }
 
-    r = requests.post(token_url, data=data)
-    result = r.json()
+    print(f"🔑 Отправляем запрос на получение токена: {token_url}")
+    try:
+        r = requests.post(token_url, data=data, timeout=10)
+        print(f"📨 Ответ Bitrix: {r.text}")
+        result = r.json()
 
-    # Для проверки выводим ответ сервера
-    return jsonify(result)
+        # 💾 Сохраняем токен в файл
+        with open("token.json", "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+
+        return jsonify(result)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
-# 3️⃣ Проверка доступности сервера
-@app.route("/")
-def index():
-    return "✅ Bitrix Bot Server работает!"
+# 🔍 Фолбэк на все неожиданные пути (для отладки)
+@app.route("/<path:unknown>", methods=["GET", "POST"])
+def catch_all(unknown):
+    return f"Путь '{unknown}' не обрабатывается этим сервером.", 404
 
 
 if __name__ == "__main__":
