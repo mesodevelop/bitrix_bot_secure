@@ -6,13 +6,15 @@ from datetime import datetime
 
 app = Flask(__name__)
 
+# Загружаем переменные окружения
 CLIENT_ID = os.getenv("BITRIX_CLIENT_ID")
 CLIENT_SECRET = os.getenv("BITRIX_CLIENT_SECRET")
 BITRIX_DOMAIN = "https://dom.mesopharm.ru"
 REDIRECT_URI = "https://bitrix-bot-537z.onrender.com/oauth/bitrix/callback"
 
-
-# 🧠 Лог всех запросов
+# ----------------------
+# Лог всех входящих запросов
+# ----------------------
 @app.before_request
 def log_request_info():
     print("\n--- 📩 Новый запрос ---")
@@ -24,26 +26,26 @@ def log_request_info():
     print("----------------------\n")
 
 
-# 🟢 Корневой маршрут (Битрикс шлёт POST сюда)
+# ----------------------
+# Корневой маршрут — POST от Bitrix при установке
+# ----------------------
 @app.route("/", methods=["GET", "POST"])
 def root():
-    """
-    Битрикс вызывает этот путь при установке приложения.
-    """
     if request.method == "POST":
         domain = request.args.get("DOMAIN")
         app_sid = request.args.get("APP_SID")
         print(f"📦 Установка приложения с домена: {domain}, APP_SID={app_sid}")
         return "✅ Приложение получило POST-запрос от Bitrix", 200
-
     return "✅ Bitrix Bot Server работает!"
 
 
-# 🚀 Ручная установка (GET)
+# ----------------------
+# Ручная установка / OAuth-редирект
+# ----------------------
 @app.route("/install")
 def install():
     if not CLIENT_ID:
-        return "Ошибка: переменная окружения BITRIX_CLIENT_ID не задана", 500
+        return "❌ Ошибка: переменная окружения BITRIX_CLIENT_ID не задана", 500
 
     auth_url = (
         f"{BITRIX_DOMAIN}/oauth/authorize/"
@@ -55,7 +57,9 @@ def install():
     return redirect(auth_url)
 
 
-# 🔄 Callback от Bitrix (GET или POST)
+# ----------------------
+# Callback после OAuth
+# ----------------------
 @app.route("/oauth/bitrix/callback", methods=["GET", "POST"])
 def oauth_callback():
     code = request.args.get("code") or request.form.get("code")
@@ -79,7 +83,7 @@ def oauth_callback():
         print(f"📨 Ответ Bitrix: {r.text}")
         result = r.json()
 
-        # 💾 Сохраняем токен
+        # Сохраняем токен
         with open("token.json", "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
 
@@ -88,5 +92,16 @@ def oauth_callback():
         return jsonify({"error": str(e)}), 500
 
 
+# ----------------------
+# Любые другие пути — для отладки
+# ----------------------
+@app.route("/<path:unknown>", methods=["GET", "POST"])
+def catch_all(unknown):
+    return f"❌ Путь '{unknown}' не обрабатывается этим сервером.", 404
+
+
+# ----------------------
+# Запуск
+# ----------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
