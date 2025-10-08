@@ -137,23 +137,41 @@ def oauth_callback():
 # Вспомогательные функции: чтение токена и вызовы Bitrix REST
 # ----------------------
 
+def _normalize_rest_base(token_data: dict) -> str:
+    # 1) Если есть client_endpoint (обычно вида https://portal/rest/), используем его
+    client_endpoint = token_data.get("client_endpoint")
+    if client_endpoint:
+        base = client_endpoint.rstrip('/')
+        if not base.endswith('/rest'):
+            base = f"{base}/rest"
+        return f"{base}/"  # гарантируем хвостовой слэш
+    # 2) Иначе пробуем domain
+    domain = token_data.get("domain")
+    if domain:
+        if not domain.startswith("http://") and not domain.startswith("https://"):
+            domain = f"https://{domain}"
+        return f"{domain.rstrip('/')}/rest/"
+    # 3) Фолбэк на BITRIX_DOMAIN
+    return f"{BITRIX_DOMAIN.rstrip('/')}/rest/"
+
+
 def load_oauth_tokens():
     try:
         with open("token.json", "r", encoding="utf-8") as f:
             data = json.load(f)
         access_token = data.get("access_token")
-        domain = data.get("domain") or BITRIX_DOMAIN
-        return access_token, domain, data
+        rest_base = _normalize_rest_base(data)
+        return access_token, rest_base, data
     except Exception as e:
         print("⚠️ Не удалось загрузить token.json:", e)
         return None, None, None
 
 
 def bitrix_call(method: str, payload: dict):
-    access_token, domain, _ = load_oauth_tokens()
-    if not access_token or not domain:
-        return None, {"error": "missing_tokens", "error_description": "Нет OAuth токенов или домена"}
-    url = f"{domain}/rest/{method}"
+    access_token, rest_base, _ = load_oauth_tokens()
+    if not access_token or not rest_base:
+        return None, {"error": "missing_tokens", "error_description": "Нет OAuth токенов или REST базы"}
+    url = f"{rest_base}{method}"
     try:
         r = requests.post(url, params={"auth": access_token}, json=payload, timeout=15)
         r.raise_for_status()
@@ -170,10 +188,11 @@ def bitrix_call(method: str, payload: dict):
 # ----------------------
 @app.route("/oauth/status", methods=["GET"])
 def oauth_status():
-    access_token, domain, raw = load_oauth_tokens()
+    access_token, rest_base, raw = load_oauth_tokens()
     return jsonify({
         "has_access_token": bool(access_token),
-        "domain": domain or BITRIX_DOMAIN,
+        "domain": raw.get("domain") if isinstance(raw, dict) else None,
+        "rest_base": rest_base,
         "token_saved": bool(raw),
         "expires_in": (raw or {}).get("expires_in"),
         "member_id": (raw or {}).get("member_id"),
