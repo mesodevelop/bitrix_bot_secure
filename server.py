@@ -39,22 +39,21 @@ def callback():
         "code": code,
     }
 
-    try:
-        headers = {"Content-Type": "application/x-www-form-urlencoded"}
-        r = requests.post(token_url, data=data, headers=headers, timeout=10)
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
-        # Отладка — выводим всю информацию о запросе
-        debug_info = f"""
+    try:
+        r = requests.post(token_url, data=data, headers=headers, timeout=10)
+        debug = f"""
         <h3>Ответ Bitrix:</h3>
         <b>URL:</b> {token_url}<br>
         <b>Статус:</b> {r.status_code}<br>
-        <b>Тело ответа:</b><br><pre>{r.text}</pre>
+        <b>Тело:</b><pre>{r.text}</pre>
         """
 
-        if r.status_code != 200:
-            return f"<h3>Ошибка от портала Bitrix</h3>{debug_info}", 500
+        if not r.text.strip():
+            debug += "<br><b>⚠️ Пустой ответ Bitrix. Проверь redirect_uri и client_secret!</b>"
 
-        return f"<h3>Access Token получен!</h3>{debug_info}"
+        return f"<h3>Access Token получен!</h3>{debug}"
 
     except Exception as e:
         return f"Ошибка при запросе токена: {str(e)}", 500
