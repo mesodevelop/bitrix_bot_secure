@@ -1,55 +1,185 @@
-from flask import Flask, request, jsonify
-import os
+from flask import Flask, request, redirect, jsonify
 import requests
+import os
+import json
+from datetime import datetime
 
 app = Flask(__name__)
 
+# Загружаем переменные окружения
+CLIENT_ID = os.getenv("BITRIX_CLIENT_ID")
+CLIENT_SECRET = os.getenv("BITRIX_CLIENT_SECRET")
+BITRIX_DOMAIN = os.getenv("BITRIX_DOMAIN", "https://dom.mesopharm.ru")
+REDIRECT_URI = os.getenv("BITRIX_OAUTH_REDIRECT_URI", "https://bitrix-bot-537z.onrender.com/oauth/bitrix/callback")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
 # ----------------------
-# Настройки
+# Лог всех входящих запросов
 # ----------------------
-BITRIX_DOMAIN = "https://dom.mesopharm.ru"  # твой портал
-ACCESS_TOKEN = os.getenv("BITRIX_ACCESS_TOKEN")  # токен техподдержки или админский
-APP_SID = os.getenv("BITRIX_APP_SID")  # APP_SID локального приложения
-APP_SECRET = os.getenv("BITRIX_APP_SECRET")  # client_secret локального приложения
+@app.before_request
+def log_request_info():
+    print("\n--- 📩 Новый запрос ---")
+    print(f"⏰ Время: {datetime.now()}")
+    print(f"➡️ Метод: {request.method}")
+    print(f"➡️ URL: {request.url}")
+    if request.data:
+        print(f"➡️ Тело запроса: {request.data.decode('utf-8', errors='ignore')}")
+    print("----------------------\n")
+
+
 # ----------------------
-
-@app.route("/", methods=["POST"])
-def index():
-    """Главный обработчик POST-запросов от Bitrix"""
-    data = request.form.to_dict() or request.json
-    print("POST от Bitrix:", data)
-
-    # Проверка App SID
-    if data.get("APP_SID") != APP_SID:
-        return jsonify({"error": "WRONG_APPLICATION_CLIENT"}), 400
-
-    # Пример: отвечаем на тестовый webhook
-    return jsonify({"result": "OK"}), 200
+# Корневой маршрут — POST от Bitrix при установке
+# ----------------------
+@app.route("/", methods=["GET", "POST"])
+def root():
+    if request.method == "POST":
+        domain = request.args.get("DOMAIN")
+        app_sid = request.args.get("APP_SID")
+        print(f"📦 Установка приложения с домена: {domain}, APP_SID={app_sid}")
+        return "✅ Приложение получило POST-запрос от Bitrix", 200
+    return "✅ Bitrix Bot Server работает!"
 
 
-@app.route("/api/message", methods=["POST"])
-def send_message():
-    """
-    Пример отправки сообщения через IM API коробочного Bitrix
-    """
-    data = request.json
-    user_id = data.get("USER_ID")
-    message = data.get("MESSAGE")
+# ----------------------
+# Ручная установка / OAuth-редирект
+# ----------------------
+@app.route("/install")
+def install():
+    if not CLIENT_ID:
+        return "❌ Ошибка: переменная окружения BITRIX_CLIENT_ID не задана", 500
 
-    if not user_id or not message:
-        return jsonify({"error": "USER_ID and MESSAGE required"}), 400
+    auth_url = (
+        f"{BITRIX_DOMAIN}/oauth/authorize/"
+        f"?client_id={CLIENT_ID}"
+        f"&response_type=code"
+        f"&redirect_uri={REDIRECT_URI}"
+    )
+    print(f"🔗 Перенаправляем на авторизацию: {auth_url}")
+    return redirect(auth_url)
 
-    url = f"{BITRIX_DOMAIN}/rest/im.message.add.json"
-    payload = {
-        "USER_ID": user_id,
-        "MESSAGE": message,
-        "AUTH": ACCESS_TOKEN
+
+# ----------------------
+# Callback после OAuth
+# ----------------------
+@app.route("/oauth/bitrix/callback", methods=["GET", "POST"])
+def oauth_callback():
+    code = request.args.get("code") or request.form.get("code")
+
+    if not code:
+        return "❌ Ошибка: отсутствует параметр code", 400
+
+    token_url = f"{BITRIX_DOMAIN}/oauth/token/"
+
+    data = {
+        "grant_type": "authorization_code",
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "redirect_uri": REDIRECT_URI,
+        "code": code,
     }
 
-    r = requests.post(url, data=payload)
-    return jsonify({"response": r.json()}), r.status_code
+    print(f"🔑 Отправляем запрос на получение токена: {token_url}")
+    r = requests.post(token_url, data=data, timeout=10)
+    print("Ответ сервера Bitrix (raw):", r.text)
+    try:
+        result = r.json()
+    except json.JSONDecodeError:
+        return {"error": "Не удалось распарсить JSON", "response": r.text}, 500
+
+    try:
+        # Сохраняем токен
+        with open("token.json", "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
+# ----------------------
+# Вспомогательные функции: чтение токена и вызовы Bitrix REST
+# ----------------------
+def load_oauth_tokens():
+    try:
+        with open("token.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+        access_token = data.get("access_token")
+        domain = data.get("domain") or BITRIX_DOMAIN
+        return access_token, domain
+    except Exception as e:
+        print("⚠️ Не удалось загрузить token.json:", e)
+        return None, None
+
+
+def bitrix_call(method: str, payload: dict):
+    access_token, domain = load_oauth_tokens()
+    if not access_token or not domain:
+        return None, {"error": "missing_tokens", "error_description": "Нет OAuth токенов или домена"}
+    url = f"{domain}/rest/{method}"
+    try:
+        r = requests.post(url, params={"auth": access_token}, json=payload, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        if "error" in data:
+            return None, data
+        return data.get("result", data), None
+    except Exception as e:
+        return None, {"error": "request_failed", "error_description": str(e)}
+
+
+# ----------------------
+# Telegram webhook: принимает сообщения и создаёт задачу в Bitrix
+# ----------------------
+@app.route("/telegram/webhook", methods=["POST"])
+def telegram_webhook():
+    update = request.get_json(silent=True) or {}
+    message = update.get("message") or {}
+    chat = message.get("chat") or {}
+    chat_id = chat.get("id")
+    text = (message.get("text") or "").strip()
+
+    if not chat_id:
+        return jsonify({"ok": True})
+
+    # Простейшая логика: текст -> задача в Bitrix
+    title = text or "Обращение из Telegram"
+    description = f"Источник: Telegram chat_id={chat_id}\n\nТекст: {text}"
+
+    result, err = bitrix_call("tasks.task.add", {
+        "fields": {
+            "TITLE": title,
+            "DESCRIPTION": description,
+        }
+    })
+
+    if TELEGRAM_BOT_TOKEN:
+        reply_text = ""
+        if err:
+            reply_text = f"Не удалось создать задачу: {err.get('error_description', err)}"
+        else:
+            task_id = (result or {}).get("task", {}).get("id") if isinstance(result, dict) else result
+            reply_text = f"Задача создана: {task_id}"
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={"chat_id": chat_id, "text": reply_text},
+                timeout=10,
+            )
+        except Exception as e:
+            print("⚠️ Ошибка отправки сообщения в Telegram:", e)
+
+    return jsonify({"ok": True, "bitrix": result or err})
+
+
+# ----------------------
+# Любые другие пути — для отладки
+# ----------------------
+@app.route("/<path:unknown>", methods=["GET", "POST"])
+def catch_all(unknown):
+    return f"❌ Путь '{unknown}' не обрабатывается этим сервером.", 404
+
+
+# ----------------------
+# Запуск
+# ----------------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=10000)
