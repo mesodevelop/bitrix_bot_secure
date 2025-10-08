@@ -7,7 +7,7 @@ app = Flask(__name__)
 CLIENT_ID = os.getenv("BITRIX_CLIENT_ID")
 CLIENT_SECRET = os.getenv("BITRIX_CLIENT_SECRET")
 REDIRECT_URI = "https://bitrix-bot-537z.onrender.com/oauth/bitrix/callback"
-BITRIX_DOMAIN = "dom.mesopharm.ru"  # корпоративный портал
+BITRIX_DOMAIN = "https://dom.mesopharm.ru"  # корпоративный портал
 
 @app.route("/")
 def index():
@@ -21,7 +21,8 @@ def auth():
         f"&response_type=code"
         f"&redirect_uri={REDIRECT_URI}"
     )
-    return f'<a href="{url}">Перейти к авторизации</a>'
+    # Важно: никаких слэшей или кавычек перед {BITRIX_DOMAIN}!
+    return f'<a href="{url}">Перейти к авторизации через Bitrix</a>'
 
 @app.route("/oauth/bitrix/callback")
 def callback():
