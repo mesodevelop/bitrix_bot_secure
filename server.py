@@ -75,9 +75,6 @@ def oauth_callback():
     if not code:
         return "❌ Ошибка: отсутствует параметр code", 400
 
-    # Используем токен-эндпоинт портала
-    token_url = f"{BITRIX_DOMAIN}/oauth/token/"
-
     data = {
         "grant_type": "authorization_code",
         "client_id": CLIENT_ID,
@@ -86,22 +83,43 @@ def oauth_callback():
         "code": code,
     }
 
-    print(f"🔑 Отправляем запрос на получение токена: {token_url}")
+    # Сначала пробуем доменный эндпоинт портала
+    portal_token_url = f"{BITRIX_DOMAIN}/oauth/token/"
+    print(f"🔑 Пробуем получить токен у портала: {portal_token_url}")
     try:
-        r = requests.post(token_url, data=data, timeout=15)
+        r = requests.post(portal_token_url, data=data, timeout=15)
+        print("Ответ портала (raw):", r.text)
+        if r.status_code == 200:
+            result = r.json()
+        else:
+            result = None
     except Exception as e:
-        return jsonify({"error": "request_failed", "error_description": str(e)}), 502
+        print("⚠️ Ошибка портального эндпоинта:", e)
+        result = None
 
-    print("Ответ сервера Bitrix (raw):", r.text)
+    # Если не удалось — пробуем официальный облачный эндпоинт
+    if result is None:
+        global_token_url = "https://oauth.bitrix.info/oauth/token/"
+        print(f"🔁 Портал не вернул токен. Пробуем: {global_token_url}")
+        try:
+            r2 = requests.post(global_token_url, data=data, timeout=15)
+            print("Ответ oauth.bitrix.info (raw):", r2.text)
+            if r2.status_code != 200:
+                return jsonify({
+                    "error": "token_exchange_failed",
+                    "portal_status": getattr(r, 'status_code', None),
+                    "portal_body": getattr(r, 'text', None),
+                    "global_status": r2.status_code,
+                    "global_body": r2.text,
+                }), 502
+            result = r2.json()
+        except Exception as e:
+            return jsonify({
+                "error": "both_token_requests_failed",
+                "portal_error": str(e),
+            }), 502
 
-    if r.status_code != 200:
-        return jsonify({"error": "token_exchange_failed", "status": r.status_code, "response": r.text}), 502
-
-    try:
-        result = r.json()
-    except json.JSONDecodeError:
-        return {"error": "Не удалось распарсить JSON", "response": r.text}, 500
-
+    # Заполняем домен/участника, если не пришли
     if cb_domain and not result.get("domain"):
         result["domain"] = f"https://{cb_domain}"
     if member_id and not result.get("member_id"):
@@ -159,6 +177,16 @@ def oauth_status():
         "token_saved": bool(raw),
         "expires_in": (raw or {}).get("expires_in"),
         "member_id": (raw or {}).get("member_id"),
+    })
+
+# Безопасный дебаг, чтобы убедиться в корректных настройках (без секретов)
+@app.route("/oauth/debug", methods=["GET"])
+def oauth_debug():
+    return jsonify({
+        "bitrix_domain": BITRIX_DOMAIN,
+        "redirect_uri": REDIRECT_URI,
+        "has_client_id": bool(CLIENT_ID),
+        "has_client_secret": bool(CLIENT_SECRET),
     })
 
 
