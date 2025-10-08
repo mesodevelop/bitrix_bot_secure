@@ -57,6 +57,11 @@ def install():
     print(f"🔗 Перенаправляем на авторизацию: {auth_url}")
     return redirect(auth_url)
 
+# Альтернативный путь для совместимости с документацией
+@app.route("/oauth/install")
+def oauth_install():
+    return install()
+
 
 # ----------------------
 # Callback после OAuth
