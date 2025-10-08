@@ -78,10 +78,13 @@ def oauth_callback():
     }
 
     print(f"🔑 Отправляем запрос на получение токена: {token_url}")
+    r = requests.post(token_url, data=data, timeout=10)
+    print("Ответ сервера Bitrix (raw):", r.text)
     try:
-        r = requests.post(token_url, data=data, timeout=10)
-        print(f"📨 Ответ Bitrix: {r.text}")
         result = r.json()
+    except json.JSONDecodeError:
+        return {"error": "Не удалось распарсить JSON", "response": r.text}, 500
+
 
         # Сохраняем токен
         with open("token.json", "w", encoding="utf-8") as f:
