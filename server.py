@@ -9,6 +9,7 @@ _memory_token_cache = {
     "access_token": None,
     "raw": None,
 }
+_task_to_chat_map: dict[str, str] = {}
 
 # Загружаем переменные окружения
 CLIENT_ID = os.getenv("BITRIX_CLIENT_ID")
@@ -355,23 +356,54 @@ def oauth_status():
 # ----------------------
 @app.route("/users", methods=["GET"])
 def get_users():
-    """Получает список пользователей Bitrix24 для определения ID"""
-    result, err = bitrix_call("user.get", {
-        "ACTIVE": "Y",  # Только активные пользователи
-        "SELECT": ["ID", "NAME", "LAST_NAME", "EMAIL", "LOGIN"]
-    })
-    
-    if err:
-        return jsonify({
-            "error": "failed_to_get_users",
-            "details": err
-        }), 500
-    
-    users = result or []
+    """Получает список пользователей Bitrix24 (пагинация и фильтры)."""
+    # query params
+    try:
+        start = int(request.args.get("start", "0"))
+    except Exception:
+        start = 0
+    try:
+        limit = int(request.args.get("limit", "50"))
+    except Exception:
+        limit = 50
+    limit = max(1, min(limit, 200))
+    fetch_all = str(request.args.get("all", "false")).lower() in {"1", "true", "yes"}
+    login = request.args.get("login")
+    name = request.args.get("name")
+
+    accumulated = []
+    next_start = start
+
+    while True:
+        payload = {
+            "ACTIVE": "Y",
+            "SELECT": ["ID", "NAME", "LAST_NAME", "EMAIL", "LOGIN"],
+            "start": next_start,
+        }
+        if login:
+            payload["LOGIN"] = login
+        if name:
+            payload["NAME"] = name
+
+        page_result, err = bitrix_call("user.get", payload)
+        if err:
+            return jsonify({"error": "failed_to_get_users", "details": err}), 500
+        page = page_result or []
+        accumulated.extend(page)
+
+        if not fetch_all:
+            break
+        if len(page) < limit:
+            break
+        next_start += limit
+        if next_start - start > 5000:
+            break
+
     return jsonify({
-        "users": users,
-        "count": len(users),
-        "note": "Используйте ID из этого списка для RESPONSIBLE_ID"
+        "users": accumulated,
+        "count": len(accumulated),
+        "params": {"start": start, "limit": limit, "all": fetch_all, "login": login, "name": name},
+        "note": "Используйте ?start, ?limit, ?all=true, ?login=, ?name=",
     })
 
 # ----------------------
@@ -524,12 +556,18 @@ def telegram_webhook():
         }
     })
 
+    # Save mapping task_id -> chat_id for reverse direction
+    task_id = None
+    if not err:
+        task_id = (result or {}).get("task", {}).get("id") if isinstance(result, dict) else result
+        if task_id:
+            _task_to_chat_map[str(task_id)] = str(chat_id)
+
     if TELEGRAM_BOT_TOKEN:
         reply_text = ""
         if err:
             reply_text = f"Не удалось создать задачу: {err.get('error_description', err)}"
         else:
-            task_id = (result or {}).get("task", {}).get("id") if isinstance(result, dict) else result
             reply_text = f"Задача создана: {task_id}"
         try:
             requests.post(
@@ -541,6 +579,38 @@ def telegram_webhook():
             print("⚠️ Ошибка отправки сообщения в Telegram:", e)
 
     return jsonify({"ok": True, "bitrix": result or err})
+
+
+# ----------------------
+# Bitrix → Telegram: события (комментарии по задачам)
+# ----------------------
+@app.route("/bitrix/events", methods=["POST"]) 
+def bitrix_events():
+    data = request.get_json(silent=True) or {}
+    task_id = str(data.get("taskId") or data.get("TASK_ID") or "")
+    text = data.get("text") or data.get("COMMENT_TEXT") or ""
+    author_id = data.get("authorId") or data.get("AUTHOR_ID")
+
+    if not task_id or not text:
+        return jsonify({"ok": False, "error": "taskId and text are required"}), 400
+
+    chat_id = _task_to_chat_map.get(task_id)
+    if not chat_id:
+        # Try to enrich mapping via REST (load last 1 comment and infer?) — skip for now
+        return jsonify({"ok": False, "error": "chat mapping not found for task", "task_id": task_id}), 404
+
+    if TELEGRAM_BOT_TOKEN:
+        try:
+            r = requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={"chat_id": chat_id, "text": f"Комментарий к задаче #{task_id}:\n{text}"},
+                timeout=10,
+            )
+            r.raise_for_status()
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    return jsonify({"ok": True})
 
 
 # ----------------------
@@ -569,26 +639,54 @@ def telegram_set_webhook():
 # ----------------------
 @app.route("/users/html", methods=["GET"])
 def users_html():
-    """HTML страница для просмотра пользователей Bitrix24"""
-    result, err = bitrix_call("user.get", {
-        "ACTIVE": "Y",
-        "SELECT": ["ID", "NAME", "LAST_NAME", "EMAIL", "LOGIN"]
-    })
-    
-    if err:
-        return f"""
-        <html>
-        <head><title>Ошибка получения пользователей</title></head>
-        <body>
+    """HTML страница для просмотра пользователей Bitrix24 (пагинация/фильтры)"""
+    # параметры
+    try:
+        start = int(request.args.get("start", "0"))
+    except Exception:
+        start = 0
+    try:
+        limit = int(request.args.get("limit", "50"))
+    except Exception:
+        limit = 50
+    limit = max(1, min(limit, 200))
+    login = request.args.get("login", "")
+    name = request.args.get("name", "")
+    fetch_all = str(request.args.get("all", "false")).lower() in {"1", "true", "yes"}
+
+    # сбор данных (та же логика, что и в /users)
+    accumulated = []
+    next_start = start
+    while True:
+        payload = {
+            "ACTIVE": "Y",
+            "SELECT": ["ID", "NAME", "LAST_NAME", "EMAIL", "LOGIN"],
+            "start": next_start,
+        }
+        if login:
+            payload["LOGIN"] = login
+        if name:
+            payload["NAME"] = name
+        page_result, err = bitrix_call("user.get", payload)
+        if err:
+            return f"""
+            <html><body>
             <h1>❌ Ошибка получения пользователей</h1>
-            <p>Детали: {err}</p>
-            <p><a href="/oauth/status">Проверить статус OAuth</a></p>
-        </body>
-        </html>
-        """, 500
-    
-    users = result or []
-    
+            <pre>{err}</pre>
+            <p><a href='/oauth/status'>Проверить статус OAuth</a></p>
+            </body></html>
+            """, 500
+        page = page_result or []
+        accumulated.extend(page)
+        if not fetch_all:
+            break
+        if len(page) < limit:
+            break
+        next_start += limit
+        if next_start - start > 5000:
+            break
+
+    # рендер
     html = """
     <html>
     <head>
@@ -599,10 +697,35 @@ def users_html():
             th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
             th { background-color: #f2f2f2; }
             .id { background-color: #e7f3ff; font-weight: bold; }
+            .controls { margin: 10px 0; }
+            .controls input { padding: 6px; }
+            .controls button { padding: 6px 10px; }
+            .pager a { margin-right: 10px; }
         </style>
+        <script>
+            function applyFilters() {
+                const params = new URLSearchParams();
+                const login = document.getElementById('login').value;
+                const name = document.getElementById('name').value;
+                const limit = document.getElementById('limit').value || 50;
+                const all = document.getElementById('all').checked ? 'true' : 'false';
+                if (login) params.set('login', login);
+                if (name) params.set('name', name);
+                if (limit) params.set('limit', limit);
+                if (all) params.set('all', all);
+                window.location.search = '?' + params.toString();
+            }
+        </script>
     </head>
     <body>
         <h1>👥 Пользователи Bitrix24</h1>
+        <div class="controls">
+            <label>Логин: <input id="login" value="" placeholder="techsupp" /></label>
+            <label>Имя: <input id="name" value="" placeholder="Бот" /></label>
+            <label>Лимит: <input id="limit" type="number" min="1" max="200" value="50" /></label>
+            <label><input id="all" type="checkbox" /> Показать все</label>
+            <button onclick="applyFilters()">Применить</button>
+        </div>
         <p>Используйте <strong>ID</strong> из таблицы для настройки RESPONSIBLE_ID</p>
         <table>
             <tr>
@@ -613,26 +736,42 @@ def users_html():
                 <th>Логин</th>
             </tr>
     """
-    
-    for user in users:
+
+    for user in accumulated:
         html += f"""
             <tr>
-                <td class="id">{user.get('ID', 'N/A')}</td>
+                <td class=\"id\">{user.get('ID', 'N/A')}</td>
                 <td>{user.get('NAME', 'N/A')}</td>
                 <td>{user.get('LAST_NAME', 'N/A')}</td>
                 <td>{user.get('EMAIL', 'N/A')}</td>
                 <td>{user.get('LOGIN', 'N/A')}</td>
             </tr>
         """
-    
-    html += """
+
+    prev_start = max(0, start - limit)
+    next_start_link = start + limit
+    qs_base = []
+    if login:
+        qs_base.append(f"login={login}")
+    if name:
+        qs_base.append(f"name={name}")
+    qs_base.append(f"limit={limit}")
+    qs_base_str = "&".join(qs_base)
+
+    html += f"""
         </table>
+        <div class=\"pager\">
+            <p>
+                <a href=\"/users/html?start={prev_start}&{qs_base_str}\">&larr; Предыдущие</a>
+                <a href=\"/users/html?start={next_start_link}&{qs_base_str}\">Следующие &rarr;</a>
+            </p>
+        </div>
         <hr>
-        <p><a href="/oauth/status">Статус OAuth</a> | <a href="/users">JSON API</a></p>
+        <p><a href=\"/oauth/status\">Статус OAuth</a> | <a href=\"/users?{qs_base_str}\">JSON API</a></p>
     </body>
     </html>
     """
-    
+
     return html
 
 # ----------------------
