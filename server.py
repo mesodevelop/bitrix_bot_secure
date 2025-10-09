@@ -705,6 +705,31 @@ def bot_register():
     _bot_state["bot_id"] = str(bot_id) if bot_id is not None else None
     return jsonify({"ok": True, "bot_id": _bot_state["bot_id"], "raw": result})
 
+@app.route("/bot/update", methods=["POST", "GET"]) 
+def bot_update():
+    # Автообновление существующего бота (по умолчанию BOT_ID=19508) на наш /bot/events
+    if request.method == "POST":
+        body = request.get_json(silent=True) or {}
+        bot_id = int(body.get("BOT_ID") or body.get("bot_id") or 19508)
+    else:
+        bot_id = int(request.args.get("BOT_ID") or request.args.get("bot_id") or 19508)
+
+    payload = {
+        "BOT_ID": bot_id,
+        "EVENT_MESSAGE_ADD": f"{RENDER_URL}/bot/events",
+        "EVENT_WELCOME_MESSAGE": f"{RENDER_URL}/bot/events",
+        "EVENT_BOT_DELETE": f"{RENDER_URL}/bot/events",
+        "OPENLINE": "N",
+        "PROPERTIES": {
+            "NAME": "Бот техподдержки",
+            "COLOR": "GRAY",
+        },
+    }
+    result, err = bitrix_call("imbot.update", payload)
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+    return jsonify({"ok": True, "result": result, "bot_id": bot_id})
+
 @app.route("/bot/events", methods=["POST", "GET"]) 
 def bot_events():
     # GET — healthcheck/проверка доступности
