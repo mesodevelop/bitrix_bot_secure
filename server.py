@@ -10,6 +10,7 @@ _memory_token_cache = {
     "raw": None,
 }
 _task_to_chat_map: dict[str, str] = {}
+_chat_to_task_map: dict[str, str] = {}
 
 # Загружаем переменные окружения
 CLIENT_ID = os.getenv("BITRIX_CLIENT_ID")
@@ -515,60 +516,46 @@ def telegram_webhook():
     title = text or "Обращение из Telegram"
     description = f"Источник: Telegram chat_id={chat_id}\n\nТекст: {text}"
 
-    # Ищем пользователя "Бот Техподдержки" с логином "techsupp"
-    responsible_id = "1"  # По умолчанию
-    
-    # Сначала пробуем найти пользователя по логину
-    users_result, _ = bitrix_call("user.get", {
-        "ACTIVE": "Y",
-        "LOGIN": "techsupp",
-        "SELECT": ["ID", "NAME", "LAST_NAME", "LOGIN"]
-    })
-    
-    if users_result and len(users_result) > 0:
-        bot_user = users_result[0]
-        responsible_id = str(bot_user["ID"])
-        print(f"✅ Найден пользователь 'Бот Техподдержки': ID={responsible_id}, Логин={bot_user.get('LOGIN')}")
-    else:
-        # Если не найден по логину, пробуем найти по имени
-        users_result, _ = bitrix_call("user.get", {
-            "ACTIVE": "Y",
-            "NAME": "Бот",
-            "SELECT": ["ID", "NAME", "LAST_NAME", "LOGIN"]
-        })
-        
-        if users_result:
-            for user in users_result:
-                if "техподдержки" in user.get("LAST_NAME", "").lower() or "техподдержки" in user.get("NAME", "").lower():
-                    responsible_id = str(user["ID"])
-                    print(f"✅ Найден пользователь по имени: ID={responsible_id}, Имя={user.get('NAME')} {user.get('LAST_NAME')}")
-                    break
-        
-        if responsible_id == "1":
-            print("⚠️ Пользователь 'Бот Техподдержки' не найден, используется ID=1")
+    # Фиксированный ответственный (Бот Техподдержки)
+    responsible_id = 19508
 
-    # OAuth REST expects fields inside "fields" object
-    result, err = bitrix_call("tasks.task.add", {
-        "fields": {
-            "TITLE": title,
-            "DESCRIPTION": description,
-            "RESPONSIBLE_ID": int(responsible_id) if str(responsible_id).isdigit() else responsible_id,
-        }
-    })
+    # Если уже есть связанная задача для этого чата — добавляем комментарий
+    existing_task_id = _chat_to_task_map.get(str(chat_id))
+    if existing_task_id:
+        result, err = bitrix_call("tasks.task.commentitem.add", {
+            "fields": {
+                "TASK_ID": int(existing_task_id),
+                "COMMENT_TEXT": text or "Сообщение из Telegram",
+            }
+        })
+        task_id = existing_task_id
+    else:
+        # Создаём новую задачу
+        result, err = bitrix_call("tasks.task.add", {
+            "fields": {
+                "TITLE": title,
+                "DESCRIPTION": description,
+                "RESPONSIBLE_ID": responsible_id,
+            }
+        })
+        task_id = None
 
     # Save mapping task_id -> chat_id for reverse direction
-    task_id = None
-    if not err:
+    if not err and not existing_task_id:
         task_id = (result or {}).get("task", {}).get("id") if isinstance(result, dict) else result
         if task_id:
             _task_to_chat_map[str(task_id)] = str(chat_id)
+            _chat_to_task_map[str(chat_id)] = str(task_id)
 
     if TELEGRAM_BOT_TOKEN:
         reply_text = ""
         if err:
-            reply_text = f"Не удалось создать задачу: {err.get('error_description', err)}"
+            reply_text = f"Не удалось обновить задачу: {err.get('error_description', err)}"
         else:
-            reply_text = f"Задача создана: {task_id}"
+            if existing_task_id:
+                reply_text = f"Комментарий добавлен в задачу: {task_id}"
+            else:
+                reply_text = f"Задача создана: {task_id}"
         try:
             requests.post(
                 f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
