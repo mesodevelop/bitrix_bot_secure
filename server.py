@@ -21,6 +21,8 @@ REDIRECT_URI = os.getenv("BITRIX_OAUTH_REDIRECT_URI", "https://bitrix-bot-537z.o
 RENDER_URL = "https://bitrix-bot-537z.onrender.com"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_NOTIFY_CHAT_ID = os.getenv("TELEGRAM_NOTIFY_CHAT_ID")  # куда слать входящие из Bitrix IM
+FORWARD_TELEGRAM_TO_IM = os.getenv("FORWARD_TELEGRAM_TO_IM", "1")  # "1" to forward Telegram -> Bitrix IM
+BITRIX_IM_DIALOG_ID = os.getenv("BITRIX_IM_DIALOG_ID", "19508")  # куда слать из Telegram в Bitrix IM
 BITRIX_ENV_ACCESS_TOKEN = os.getenv("BITRIX_ACCESS_TOKEN")
 BITRIX_ENV_REFRESH_TOKEN = os.getenv("BITRIX_REFRESH_TOKEN")
 BITRIX_ENV_REST_BASE = os.getenv("BITRIX_REST_BASE")  # e.g. https://dom.mesopharm.ru/rest/
@@ -57,49 +59,18 @@ def root():
         <style>
             body {{ font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }}
             .container {{ background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
-            .status {{ color: #28a745; font-size: 24px; margin-bottom: 20px; }}
-            .info {{ background: #e7f3ff; padding: 15px; border-radius: 5px; margin: 10px 0; }}
-            .endpoint {{ background: #f8f9fa; padding: 10px; margin: 5px 0; border-left: 4px solid #007bff; }}
-            a {{ color: #007bff; text-decoration: none; }}
-            a:hover {{ text-decoration: underline; }}
+            .status {{ color: #28a745; font-size: 24px; margin-bottom: 10px; }}
+            .links a {{ display: inline-block; margin-right: 12px; color: #007bff; text-decoration: none; }}
+            .links a:hover {{ text-decoration: underline; }}
         </style>
     </head>
     <body>
         <div class="container">
             <div class="status">✅ Bitrix Bot Server работает!</div>
-            
-            <div class="info">
-                <h3>🔗 Интеграция с Telegram и Bitrix24</h3>
-                <p><strong>Bitrix24:</strong> {BITRIX_DOMAIN}</p>
-                <p><strong>Сервер:</strong> {RENDER_URL}</p>
-                <p><strong>Пользователь бота:</strong> Бот Техподдержки (techsupp)</p>
-            </div>
-            
-            <h3>📋 Доступные эндпоинты:</h3>
-            
-            <div class="endpoint">
-                <strong>OAuth авторизация:</strong><br>
-                <a href="/install">/install</a> - Начать OAuth авторизацию<br>
-                <a href="/oauth/status">/oauth/status</a> - Статус авторизации
-            </div>
-            
-            <div class="endpoint">
-                <strong>Пользователи Bitrix24:</strong><br>
-                <a href="/users/html">/users/html</a> - HTML таблица пользователей<br>
-                <a href="/users">/users</a> - JSON список пользователей<br>
-                <a href="/user/techsupport-bot">/user/techsupport-bot</a> - Поиск бота техподдержки
-            </div>
-            
-            <div class="endpoint">
-                <strong>Telegram webhook:</strong><br>
-                <a href="/telegram/webhook">/telegram/webhook</a> - Прием сообщений от Telegram
-            </div>
-            
-            <div class="info">
-                <h4>🔧 Настройка:</h4>
-                <p>1. Выполните OAuth авторизацию через <a href="/install">/install</a></p>
-                <p>2. Настройте Telegram webhook на <code>{RENDER_URL}/telegram/webhook</code></p>
-                <p>3. Проверьте статус через <a href="/oauth/status">/oauth/status</a></p>
+            <div class="links">
+                <a href="/oauth/status">/oauth/status</a>
+                <a href="/bot/status">/bot/status</a>
+                <a href="/debug/mappings">/debug/mappings</a>
             </div>
         </div>
     </body>
@@ -389,138 +360,11 @@ def oauth_status():
         "source": source,
     })
 
-# ----------------------
-# Получение списка пользователей Bitrix24
-# ----------------------
-@app.route("/users", methods=["GET"])
-def get_users():
-    """Получает список пользователей Bitrix24 (пагинация и фильтры)."""
-    # query params
-    try:
-        start = int(request.args.get("start", "0"))
-    except Exception:
-        start = 0
-    try:
-        limit = int(request.args.get("limit", "50"))
-    except Exception:
-        limit = 50
-    limit = max(1, min(limit, 200))
-    fetch_all = str(request.args.get("all", "false")).lower() in {"1", "true", "yes"}
-    login = request.args.get("login")
-    name = request.args.get("name")
+ 
 
-    accumulated = []
-    next_start = start
+ 
 
-    while True:
-        payload = {
-            "ACTIVE": "Y",
-            "SELECT": ["ID", "NAME", "LAST_NAME", "EMAIL", "LOGIN"],
-            "start": next_start,
-        }
-        if login:
-            payload["LOGIN"] = login
-        if name:
-            payload["NAME"] = name
-
-        page_result, err = bitrix_call("user.get", payload)
-        if err:
-            return jsonify({"error": "failed_to_get_users", "details": err}), 500
-        page = page_result or []
-        accumulated.extend(page)
-
-        if not fetch_all:
-            break
-        if len(page) < limit:
-            break
-        next_start += limit
-        if next_start - start > 5000:
-            break
-
-    return jsonify({
-        "users": accumulated,
-        "count": len(accumulated),
-        "params": {"start": start, "limit": limit, "all": fetch_all, "login": login, "name": name},
-        "note": "Используйте ?start, ?limit, ?all=true, ?login=, ?name=",
-    })
-
-# ----------------------
-# Получение информации о текущем пользователе
-# ----------------------
-@app.route("/user/current", methods=["GET"])
-def get_current_user():
-    """Получает информацию о текущем пользователе (владельце токена)"""
-    result, err = bitrix_call("user.current", {})
-    
-    if err:
-        return jsonify({
-            "error": "failed_to_get_current_user",
-            "details": err
-        }), 500
-    
-    return jsonify({
-        "current_user": result,
-        "note": "Это пользователь, от имени которого работает приложение"
-    })
-
-# ----------------------
-# Поиск пользователя "Бот Техподдержки"
-# ----------------------
-@app.route("/user/techsupport-bot", methods=["GET"])
-def get_techsupport_bot():
-    """Ищет пользователя 'Бот Техподдержки' с логином 'techsupp'"""
-    
-    # Сначала ищем по логину
-    result, err = bitrix_call("user.get", {
-        "ACTIVE": "Y",
-        "LOGIN": "techsupp",
-        "SELECT": ["ID", "NAME", "LAST_NAME", "LOGIN", "EMAIL"]
-    })
-    
-    if err:
-        return jsonify({
-            "error": "failed_to_search_user",
-            "details": err
-        }), 500
-    
-    if result and len(result) > 0:
-        bot_user = result[0]
-        return jsonify({
-            "found": True,
-            "user": bot_user,
-            "search_method": "by_login",
-            "note": f"Найден пользователь: {bot_user.get('NAME')} {bot_user.get('LAST_NAME')} (ID: {bot_user.get('ID')})"
-        })
-    
-    # Если не найден по логину, ищем по имени
-    result, err = bitrix_call("user.get", {
-        "ACTIVE": "Y",
-        "NAME": "Бот",
-        "SELECT": ["ID", "NAME", "LAST_NAME", "LOGIN", "EMAIL"]
-    })
-    
-    if err:
-        return jsonify({
-            "error": "failed_to_search_user_by_name",
-            "details": err
-        }), 500
-    
-    if result:
-        for user in result:
-            if "техподдержки" in user.get("LAST_NAME", "").lower() or "техподдержки" in user.get("NAME", "").lower():
-                return jsonify({
-                    "found": True,
-                    "user": user,
-                    "search_method": "by_name",
-                    "note": f"Найден пользователь: {user.get('NAME')} {user.get('LAST_NAME')} (ID: {user.get('ID')})"
-                })
-    
-    return jsonify({
-        "found": False,
-        "user": None,
-        "search_method": "both",
-        "note": "Пользователь 'Бот Техподдержки' с логином 'techsupp' не найден"
-    })
+ 
 
 # Безопасный дебаг, чтобы убедиться в корректных настройках (без секретов)
 @app.route("/oauth/debug", methods=["GET"])
@@ -608,6 +452,25 @@ def telegram_webhook():
             )
         except Exception as e:
             print("⚠️ Ошибка отправки сообщения в Telegram:", e)
+
+    # Дополнительно: пересылаем текст из Telegram в Bitrix IM (двусторонний мост)
+    try:
+        if FORWARD_TELEGRAM_TO_IM in {"1", "true", "TRUE", "yes", "on"} and text:
+            target_dialog = BITRIX_IM_DIALOG_ID
+            try:
+                target_dialog_int = int(str(target_dialog))
+            except Exception:
+                target_dialog_int = None
+            payload = {
+                "BOT_ID": int((_bot_state.get("bot_id") or 19510)),
+                "DIALOG_ID": target_dialog_int if target_dialog_int is not None else str(target_dialog),
+                "MESSAGE": text,
+            }
+            _res, _err = bitrix_call("imbot.message.add", payload)
+            if _err:
+                print("⚠️ Ошибка пересылки в Bitrix IM:", _err)
+    except Exception as e:
+        print("⚠️ Исключение при пересылке в Bitrix IM:", e)
 
     return jsonify({"ok": True, "bitrix": result or err})
 
@@ -822,145 +685,7 @@ def chat_bind():
     _task_to_chat_map[str(task_id)] = str(chat_id)
     return jsonify({"ok": True, "bound": {"chat_id": chat_id, "task_id": task_id}})
 
-# ----------------------
-# HTML страница для просмотра пользователей
-# ----------------------
-@app.route("/users/html", methods=["GET"])
-def users_html():
-    """HTML страница для просмотра пользователей Bitrix24 (пагинация/фильтры)"""
-    # параметры
-    try:
-        start = int(request.args.get("start", "0"))
-    except Exception:
-        start = 0
-    try:
-        limit = int(request.args.get("limit", "50"))
-    except Exception:
-        limit = 50
-    limit = max(1, min(limit, 200))
-    login = request.args.get("login", "")
-    name = request.args.get("name", "")
-    fetch_all = str(request.args.get("all", "false")).lower() in {"1", "true", "yes"}
-
-    # сбор данных (та же логика, что и в /users)
-    accumulated = []
-    next_start = start
-    while True:
-        payload = {
-            "ACTIVE": "Y",
-            "SELECT": ["ID", "NAME", "LAST_NAME", "EMAIL", "LOGIN"],
-            "start": next_start,
-        }
-        if login:
-            payload["LOGIN"] = login
-        if name:
-            payload["NAME"] = name
-        page_result, err = bitrix_call("user.get", payload)
-        if err:
-            return f"""
-            <html><body>
-            <h1>❌ Ошибка получения пользователей</h1>
-            <pre>{err}</pre>
-            <p><a href='/oauth/status'>Проверить статус OAuth</a></p>
-            </body></html>
-            """, 500
-        page = page_result or []
-        accumulated.extend(page)
-        if not fetch_all:
-            break
-        if len(page) < limit:
-            break
-        next_start += limit
-        if next_start - start > 5000:
-            break
-
-    # рендер
-    html = """
-    <html>
-    <head>
-        <title>Пользователи Bitrix24</title>
-        <style>
-            body { font-family: Arial, sans-serif; margin: 20px; }
-            table { border-collapse: collapse; width: 100%; }
-            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-            th { background-color: #f2f2f2; }
-            .id { background-color: #e7f3ff; font-weight: bold; }
-            .controls { margin: 10px 0; }
-            .controls input { padding: 6px; }
-            .controls button { padding: 6px 10px; }
-            .pager a { margin-right: 10px; }
-        </style>
-        <script>
-            function applyFilters() {
-                const params = new URLSearchParams();
-                const login = document.getElementById('login').value;
-                const name = document.getElementById('name').value;
-                const limit = document.getElementById('limit').value || 50;
-                const all = document.getElementById('all').checked ? 'true' : 'false';
-                if (login) params.set('login', login);
-                if (name) params.set('name', name);
-                if (limit) params.set('limit', limit);
-                if (all) params.set('all', all);
-                window.location.search = '?' + params.toString();
-            }
-        </script>
-    </head>
-    <body>
-        <h1>👥 Пользователи Bitrix24</h1>
-        <div class="controls">
-            <label>Логин: <input id="login" value="" placeholder="techsupp" /></label>
-            <label>Имя: <input id="name" value="" placeholder="Бот" /></label>
-            <label>Лимит: <input id="limit" type="number" min="1" max="200" value="50" /></label>
-            <label><input id="all" type="checkbox" /> Показать все</label>
-            <button onclick="applyFilters()">Применить</button>
-        </div>
-        <p>Используйте <strong>ID</strong> из таблицы для настройки RESPONSIBLE_ID</p>
-        <table>
-            <tr>
-                <th>ID</th>
-                <th>Имя</th>
-                <th>Фамилия</th>
-                <th>Email</th>
-                <th>Логин</th>
-            </tr>
-    """
-
-    for user in accumulated:
-        html += f"""
-            <tr>
-                <td class=\"id\">{user.get('ID', 'N/A')}</td>
-                <td>{user.get('NAME', 'N/A')}</td>
-                <td>{user.get('LAST_NAME', 'N/A')}</td>
-                <td>{user.get('EMAIL', 'N/A')}</td>
-                <td>{user.get('LOGIN', 'N/A')}</td>
-            </tr>
-        """
-
-    prev_start = max(0, start - limit)
-    next_start_link = start + limit
-    qs_base = []
-    if login:
-        qs_base.append(f"login={login}")
-    if name:
-        qs_base.append(f"name={name}")
-    qs_base.append(f"limit={limit}")
-    qs_base_str = "&".join(qs_base)
-
-    html += f"""
-        </table>
-        <div class=\"pager\">
-            <p>
-                <a href=\"/users/html?start={prev_start}&{qs_base_str}\">&larr; Предыдущие</a>
-                <a href=\"/users/html?start={next_start_link}&{qs_base_str}\">Следующие &rarr;</a>
-            </p>
-        </div>
-        <hr>
-        <p><a href=\"/oauth/status\">Статус OAuth</a> | <a href=\"/users?{qs_base_str}\">JSON API</a></p>
-    </body>
-    </html>
-    """
-
-    return html
+ 
 
 # ----------------------
 # Любые другие пути — для отладки
