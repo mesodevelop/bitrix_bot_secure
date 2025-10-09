@@ -522,7 +522,8 @@ def telegram_webhook():
     # Если уже есть связанная задача для этого чата — добавляем комментарий
     existing_task_id = _chat_to_task_map.get(str(chat_id))
     if existing_task_id:
-        result, err = bitrix_call("tasks.task.commentitem.add", {
+        # Correct REST method for adding a task comment
+        result, err = bitrix_call("task.commentitem.add", {
             "fields": {
                 "TASK_ID": int(existing_task_id),
                 "COMMENT_TEXT": text or "Сообщение из Telegram",
