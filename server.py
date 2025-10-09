@@ -686,6 +686,7 @@ def bot_register():
         "TYPE": "HUMAN",
         "EVENT_MESSAGE_ADD": f"{RENDER_URL}/bot/events",
         "EVENT_WELCOME_MESSAGE": f"{RENDER_URL}/bot/events",
+        "EVENT_BOT_DELETE": f"{RENDER_URL}/bot/events",
         "OPENLINE": "N",
         "PROPERTIES": {
             "NAME": "Бот техподдержки (мост)",
