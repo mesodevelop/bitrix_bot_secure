@@ -695,10 +695,15 @@ def bot_register():
     }
     result, err = bitrix_call("imbot.register", payload)
     if err:
-        return jsonify({"ok": False, "error": err}), 500
-    bot_id = (result or {}).get("BOT_ID") or result
-    _bot_state["bot_id"] = str(bot_id)
-    return jsonify({"ok": True, "bot_id": _bot_state["bot_id"]})
+        return jsonify({"ok": False, "error": err}), 400
+    # Bitrix may return plain ID or object with BOT_ID
+    bot_id = None
+    if isinstance(result, dict):
+        bot_id = result.get("BOT_ID") or result.get("bot_id") or result.get("result")
+    else:
+        bot_id = result
+    _bot_state["bot_id"] = str(bot_id) if bot_id is not None else None
+    return jsonify({"ok": True, "bot_id": _bot_state["bot_id"], "raw": result})
 
 @app.route("/bot/events", methods=["POST", "GET"]) 
 def bot_events():
