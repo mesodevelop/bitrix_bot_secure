@@ -370,8 +370,11 @@ def oauth_debug():
 # ----------------------
 # Telegram webhook: принимает сообщения и создаёт задачу в Bitrix
 # ----------------------
-@app.route("/telegram/webhook", methods=["POST"])
+@app.route("/telegram/webhook", methods=["GET", "POST"]) 
 def telegram_webhook():
+    # GET — healthcheck/webhook verification convenience
+    if request.method == "GET":
+        return jsonify({"ok": True, "message": "Telegram webhook is up"})
     update = request.get_json(silent=True) or {}
     message = update.get("message") or {}
     chat = message.get("chat") or {}
@@ -439,6 +442,27 @@ def telegram_webhook():
             print("⚠️ Ошибка отправки сообщения в Telegram:", e)
 
     return jsonify({"ok": True, "bitrix": result or err})
+
+
+# ----------------------
+# Telegram: helper to set webhook to this server
+# ----------------------
+@app.route("/telegram/set_webhook", methods=["POST", "GET"]) 
+def telegram_set_webhook():
+    if not TELEGRAM_BOT_TOKEN:
+        return jsonify({"ok": False, "error": "TELEGRAM_BOT_TOKEN is not set"}), 500
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setWebhook"
+    webhook_url = f"{RENDER_URL}/telegram/webhook"
+    try:
+        r = requests.post(url, json={"url": webhook_url}, timeout=10)
+        return jsonify({
+            "ok": r.ok,
+            "status_code": r.status_code,
+            "request": {"url": url, "webhook": webhook_url},
+            "response": r.json() if r.headers.get("content-type", "").startswith("application/json") else r.text,
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 # ----------------------
