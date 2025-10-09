@@ -11,6 +11,7 @@ CLIENT_ID = os.getenv("BITRIX_CLIENT_ID")
 CLIENT_SECRET = os.getenv("BITRIX_CLIENT_SECRET")
 BITRIX_DOMAIN = os.getenv("BITRIX_DOMAIN", "https://dom.mesopharm.ru")
 REDIRECT_URI = os.getenv("BITRIX_OAUTH_REDIRECT_URI", "https://bitrix-bot-537z.onrender.com/oauth/bitrix/callback")
+RENDER_URL = "https://bitrix-bot-537z.onrender.com"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # ----------------------
@@ -37,7 +38,62 @@ def root():
         app_sid = request.args.get("APP_SID")
         print(f"📦 Установка приложения с домена: {domain}, APP_SID={app_sid}")
         return "✅ Приложение получило POST-запрос от Bitrix", 200
-    return "✅ Bitrix Bot Server работает!"
+    
+    return f"""
+    <html>
+    <head>
+        <title>Bitrix Bot Server</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }}
+            .container {{ background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+            .status {{ color: #28a745; font-size: 24px; margin-bottom: 20px; }}
+            .info {{ background: #e7f3ff; padding: 15px; border-radius: 5px; margin: 10px 0; }}
+            .endpoint {{ background: #f8f9fa; padding: 10px; margin: 5px 0; border-left: 4px solid #007bff; }}
+            a {{ color: #007bff; text-decoration: none; }}
+            a:hover {{ text-decoration: underline; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="status">✅ Bitrix Bot Server работает!</div>
+            
+            <div class="info">
+                <h3>🔗 Интеграция с Telegram и Bitrix24</h3>
+                <p><strong>Bitrix24:</strong> {BITRIX_DOMAIN}</p>
+                <p><strong>Сервер:</strong> {RENDER_URL}</p>
+                <p><strong>Пользователь бота:</strong> Бот Техподдержки (techsupp)</p>
+            </div>
+            
+            <h3>📋 Доступные эндпоинты:</h3>
+            
+            <div class="endpoint">
+                <strong>OAuth авторизация:</strong><br>
+                <a href="/install">/install</a> - Начать OAuth авторизацию<br>
+                <a href="/oauth/status">/oauth/status</a> - Статус авторизации
+            </div>
+            
+            <div class="endpoint">
+                <strong>Пользователи Bitrix24:</strong><br>
+                <a href="/users/html">/users/html</a> - HTML таблица пользователей<br>
+                <a href="/users">/users</a> - JSON список пользователей<br>
+                <a href="/user/techsupport-bot">/user/techsupport-bot</a> - Поиск бота техподдержки
+            </div>
+            
+            <div class="endpoint">
+                <strong>Telegram webhook:</strong><br>
+                <a href="/telegram/webhook">/telegram/webhook</a> - Прием сообщений от Telegram
+            </div>
+            
+            <div class="info">
+                <h4>🔧 Настройка:</h4>
+                <p>1. Выполните OAuth авторизацию через <a href="/install">/install</a></p>
+                <p>2. Настройте Telegram webhook на <code>{RENDER_URL}/telegram/webhook</code></p>
+                <p>3. Проверьте статус через <a href="/oauth/status">/oauth/status</a></p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
 
 
 # ----------------------
@@ -198,6 +254,108 @@ def oauth_status():
         "member_id": (raw or {}).get("member_id"),
     })
 
+# ----------------------
+# Получение списка пользователей Bitrix24
+# ----------------------
+@app.route("/users", methods=["GET"])
+def get_users():
+    """Получает список пользователей Bitrix24 для определения ID"""
+    result, err = bitrix_call("user.get", {
+        "ACTIVE": "Y",  # Только активные пользователи
+        "SELECT": ["ID", "NAME", "LAST_NAME", "EMAIL", "LOGIN"]
+    })
+    
+    if err:
+        return jsonify({
+            "error": "failed_to_get_users",
+            "details": err
+        }), 500
+    
+    users = result or []
+    return jsonify({
+        "users": users,
+        "count": len(users),
+        "note": "Используйте ID из этого списка для RESPONSIBLE_ID"
+    })
+
+# ----------------------
+# Получение информации о текущем пользователе
+# ----------------------
+@app.route("/user/current", methods=["GET"])
+def get_current_user():
+    """Получает информацию о текущем пользователе (владельце токена)"""
+    result, err = bitrix_call("user.current", {})
+    
+    if err:
+        return jsonify({
+            "error": "failed_to_get_current_user",
+            "details": err
+        }), 500
+    
+    return jsonify({
+        "current_user": result,
+        "note": "Это пользователь, от имени которого работает приложение"
+    })
+
+# ----------------------
+# Поиск пользователя "Бот Техподдержки"
+# ----------------------
+@app.route("/user/techsupport-bot", methods=["GET"])
+def get_techsupport_bot():
+    """Ищет пользователя 'Бот Техподдержки' с логином 'techsupp'"""
+    
+    # Сначала ищем по логину
+    result, err = bitrix_call("user.get", {
+        "ACTIVE": "Y",
+        "LOGIN": "techsupp",
+        "SELECT": ["ID", "NAME", "LAST_NAME", "LOGIN", "EMAIL"]
+    })
+    
+    if err:
+        return jsonify({
+            "error": "failed_to_search_user",
+            "details": err
+        }), 500
+    
+    if result and len(result) > 0:
+        bot_user = result[0]
+        return jsonify({
+            "found": True,
+            "user": bot_user,
+            "search_method": "by_login",
+            "note": f"Найден пользователь: {bot_user.get('NAME')} {bot_user.get('LAST_NAME')} (ID: {bot_user.get('ID')})"
+        })
+    
+    # Если не найден по логину, ищем по имени
+    result, err = bitrix_call("user.get", {
+        "ACTIVE": "Y",
+        "NAME": "Бот",
+        "SELECT": ["ID", "NAME", "LAST_NAME", "LOGIN", "EMAIL"]
+    })
+    
+    if err:
+        return jsonify({
+            "error": "failed_to_search_user_by_name",
+            "details": err
+        }), 500
+    
+    if result:
+        for user in result:
+            if "техподдержки" in user.get("LAST_NAME", "").lower() or "техподдержки" in user.get("NAME", "").lower():
+                return jsonify({
+                    "found": True,
+                    "user": user,
+                    "search_method": "by_name",
+                    "note": f"Найден пользователь: {user.get('NAME')} {user.get('LAST_NAME')} (ID: {user.get('ID')})"
+                })
+    
+    return jsonify({
+        "found": False,
+        "user": None,
+        "search_method": "both",
+        "note": "Пользователь 'Бот Техподдержки' с логином 'techsupp' не найден"
+    })
+
 # Безопасный дебаг, чтобы убедиться в корректных настройках (без секретов)
 @app.route("/oauth/debug", methods=["GET"])
 def oauth_debug():
@@ -226,11 +384,42 @@ def telegram_webhook():
     title = text or "Обращение из Telegram"
     description = f"Источник: Telegram chat_id={chat_id}\n\nТекст: {text}"
 
+    # Ищем пользователя "Бот Техподдержки" с логином "techsupp"
+    responsible_id = "1"  # По умолчанию
+    
+    # Сначала пробуем найти пользователя по логину
+    users_result, _ = bitrix_call("user.get", {
+        "ACTIVE": "Y",
+        "LOGIN": "techsupp",
+        "SELECT": ["ID", "NAME", "LAST_NAME", "LOGIN"]
+    })
+    
+    if users_result and len(users_result) > 0:
+        bot_user = users_result[0]
+        responsible_id = str(bot_user["ID"])
+        print(f"✅ Найден пользователь 'Бот Техподдержки': ID={responsible_id}, Логин={bot_user.get('LOGIN')}")
+    else:
+        # Если не найден по логину, пробуем найти по имени
+        users_result, _ = bitrix_call("user.get", {
+            "ACTIVE": "Y",
+            "NAME": "Бот",
+            "SELECT": ["ID", "NAME", "LAST_NAME", "LOGIN"]
+        })
+        
+        if users_result:
+            for user in users_result:
+                if "техподдержки" in user.get("LAST_NAME", "").lower() or "техподдержки" in user.get("NAME", "").lower():
+                    responsible_id = str(user["ID"])
+                    print(f"✅ Найден пользователь по имени: ID={responsible_id}, Имя={user.get('NAME')} {user.get('LAST_NAME')}")
+                    break
+        
+        if responsible_id == "1":
+            print("⚠️ Пользователь 'Бот Техподдержки' не найден, используется ID=1")
+
     result, err = bitrix_call("tasks.task.add", {
-        "fields": {
-            "TITLE": title,
-            "DESCRIPTION": description,
-        }
+        "TITLE": title,
+        "DESCRIPTION": description,
+        "RESPONSIBLE_ID": responsible_id,
     })
 
     if TELEGRAM_BOT_TOKEN:
@@ -251,6 +440,77 @@ def telegram_webhook():
 
     return jsonify({"ok": True, "bitrix": result or err})
 
+
+# ----------------------
+# HTML страница для просмотра пользователей
+# ----------------------
+@app.route("/users/html", methods=["GET"])
+def users_html():
+    """HTML страница для просмотра пользователей Bitrix24"""
+    result, err = bitrix_call("user.get", {
+        "ACTIVE": "Y",
+        "SELECT": ["ID", "NAME", "LAST_NAME", "EMAIL", "LOGIN"]
+    })
+    
+    if err:
+        return f"""
+        <html>
+        <head><title>Ошибка получения пользователей</title></head>
+        <body>
+            <h1>❌ Ошибка получения пользователей</h1>
+            <p>Детали: {err}</p>
+            <p><a href="/oauth/status">Проверить статус OAuth</a></p>
+        </body>
+        </html>
+        """, 500
+    
+    users = result or []
+    
+    html = """
+    <html>
+    <head>
+        <title>Пользователи Bitrix24</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            table { border-collapse: collapse; width: 100%; }
+            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+            th { background-color: #f2f2f2; }
+            .id { background-color: #e7f3ff; font-weight: bold; }
+        </style>
+    </head>
+    <body>
+        <h1>👥 Пользователи Bitrix24</h1>
+        <p>Используйте <strong>ID</strong> из таблицы для настройки RESPONSIBLE_ID</p>
+        <table>
+            <tr>
+                <th>ID</th>
+                <th>Имя</th>
+                <th>Фамилия</th>
+                <th>Email</th>
+                <th>Логин</th>
+            </tr>
+    """
+    
+    for user in users:
+        html += f"""
+            <tr>
+                <td class="id">{user.get('ID', 'N/A')}</td>
+                <td>{user.get('NAME', 'N/A')}</td>
+                <td>{user.get('LAST_NAME', 'N/A')}</td>
+                <td>{user.get('EMAIL', 'N/A')}</td>
+                <td>{user.get('LOGIN', 'N/A')}</td>
+            </tr>
+        """
+    
+    html += """
+        </table>
+        <hr>
+        <p><a href="/oauth/status">Статус OAuth</a> | <a href="/users">JSON API</a></p>
+    </body>
+    </html>
+    """
+    
+    return html
 
 # ----------------------
 # Любые другие пути — для отладки
