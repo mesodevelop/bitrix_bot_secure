@@ -730,6 +730,34 @@ def bot_update():
         return jsonify({"ok": False, "error": err}), 400
     return jsonify({"ok": True, "result": result, "bot_id": bot_id})
 
+# ----------------------
+# Bitrix IM Bot: send message via server bridge (uses auto-refresh tokens)
+# ----------------------
+@app.route("/bot/send", methods=["POST", "GET"]) 
+def bot_send():
+    if request.method == "POST":
+        body = request.get_json(silent=True) or {}
+        dialog_id = body.get("DIALOG_ID") or body.get("dialog_id")
+        message = body.get("MESSAGE") or body.get("message")
+        bot_id = body.get("BOT_ID") or body.get("bot_id") or _bot_state.get("bot_id") or 19510
+    else:
+        dialog_id = request.args.get("DIALOG_ID") or request.args.get("dialog_id")
+        message = request.args.get("MESSAGE") or request.args.get("message")
+        bot_id = request.args.get("BOT_ID") or request.args.get("bot_id") or _bot_state.get("bot_id") or 19510
+
+    if not dialog_id or not message:
+        return jsonify({"ok": False, "error": "dialog_id and message are required"}), 400
+
+    payload = {
+        "BOT_ID": int(bot_id),
+        "DIALOG_ID": dialog_id if isinstance(dialog_id, int) or (isinstance(dialog_id, str) and dialog_id.isdigit()) else str(dialog_id),
+        "MESSAGE": message,
+    }
+    result, err = bitrix_call("imbot.message.add", payload)
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+    return jsonify({"ok": True, "result": result, "bot_id": str(bot_id), "dialog_id": str(dialog_id)})
+
 @app.route("/bot/events", methods=["POST", "GET"]) 
 def bot_events():
     # GET — healthcheck/проверка доступности
