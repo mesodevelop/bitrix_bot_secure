@@ -5,6 +5,10 @@ import json
 from datetime import datetime
 
 app = Flask(__name__)
+_memory_token_cache = {
+    "access_token": None,
+    "raw": None,
+}
 
 # Загружаем переменные окружения
 CLIENT_ID = os.getenv("BITRIX_CLIENT_ID")
@@ -184,6 +188,9 @@ def oauth_callback():
     try:
         with open("token.json", "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
+        # also cache in memory
+        _memory_token_cache["access_token"] = result.get("access_token")
+        _memory_token_cache["raw"] = result
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -213,13 +220,41 @@ def _normalize_rest_base(token_data: dict) -> str:
 
 def load_oauth_tokens():
     try:
+        # 1) Memory cache first
+        if _memory_token_cache.get("access_token") and _memory_token_cache.get("raw"):
+            data = _memory_token_cache["raw"]
+            access_token = _memory_token_cache["access_token"]
+            rest_base = _normalize_rest_base(data)
+            return access_token, rest_base, data
+
+        # 2) token.json on disk
         with open("token.json", "r", encoding="utf-8") as f:
             data = json.load(f)
         access_token = data.get("access_token")
         rest_base = _normalize_rest_base(data)
+        # populate memory cache
+        _memory_token_cache["access_token"] = access_token
+        _memory_token_cache["raw"] = data
         return access_token, rest_base, data
     except Exception as e:
         print("⚠️ Не удалось загрузить token.json:", e)
+        # 3) Environment fallback
+        env_access_token = os.getenv("BITRIX_ACCESS_TOKEN")
+        env_rest_base = os.getenv("BITRIX_REST_BASE")  # e.g. https://dom.mesopharm.ru/rest/
+        env_domain = os.getenv("BITRIX_DOMAIN")
+        if env_access_token and (env_rest_base or env_domain):
+            data = {
+                "access_token": env_access_token,
+                "domain": env_domain,
+                "client_endpoint": env_rest_base,
+            }
+            access_token = env_access_token
+            rest_base = _normalize_rest_base(data)
+            # cache in memory
+            _memory_token_cache["access_token"] = access_token
+            _memory_token_cache["raw"] = data
+            print("✅ Загрузка OAuth токена из ENV")
+            return access_token, rest_base, data
         return None, None, None
 
 
@@ -245,6 +280,7 @@ def bitrix_call(method: str, payload: dict):
 @app.route("/oauth/status", methods=["GET"])
 def oauth_status():
     access_token, rest_base, raw = load_oauth_tokens()
+    source = "memory" if _memory_token_cache.get("access_token") else ("file" if os.path.exists("token.json") else ("env" if os.getenv("BITRIX_ACCESS_TOKEN") else "none"))
     return jsonify({
         "has_access_token": bool(access_token),
         "domain": raw.get("domain") if isinstance(raw, dict) else None,
@@ -252,6 +288,7 @@ def oauth_status():
         "token_saved": bool(raw),
         "expires_in": (raw or {}).get("expires_in"),
         "member_id": (raw or {}).get("member_id"),
+        "source": source,
     })
 
 # ----------------------
@@ -419,10 +456,13 @@ def telegram_webhook():
         if responsible_id == "1":
             print("⚠️ Пользователь 'Бот Техподдержки' не найден, используется ID=1")
 
+    # OAuth REST expects fields inside "fields" object
     result, err = bitrix_call("tasks.task.add", {
-        "TITLE": title,
-        "DESCRIPTION": description,
-        "RESPONSIBLE_ID": responsible_id,
+        "fields": {
+            "TITLE": title,
+            "DESCRIPTION": description,
+            "RESPONSIBLE_ID": int(responsible_id) if str(responsible_id).isdigit() else responsible_id,
+        }
     })
 
     if TELEGRAM_BOT_TOKEN:
