@@ -654,6 +654,16 @@ def bot_events():
                 )
             except Exception:
                 pass
+        # Мгновенное подтверждение в тот же диалог, чтобы видно было реакцию бота
+        try:
+            if dialog_id and _bot_state.get("bot_id"):
+                _ = bitrix_call("imbot.message.add", {
+                    "BOT_ID": int(_bot_state.get("bot_id")),
+                    "DIALOG_ID": dialog_id,
+                    "MESSAGE": "Принято",
+                })
+        except Exception:
+            pass
     return jsonify({"ok": True})
 
 # ----------------------
