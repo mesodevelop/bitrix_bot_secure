@@ -17,6 +17,9 @@ BITRIX_DOMAIN = os.getenv("BITRIX_DOMAIN", "https://dom.mesopharm.ru")
 REDIRECT_URI = os.getenv("BITRIX_OAUTH_REDIRECT_URI", "https://bitrix-bot-537z.onrender.com/oauth/bitrix/callback")
 RENDER_URL = "https://bitrix-bot-537z.onrender.com"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+BITRIX_ENV_ACCESS_TOKEN = os.getenv("BITRIX_ACCESS_TOKEN")
+BITRIX_ENV_REFRESH_TOKEN = os.getenv("BITRIX_REFRESH_TOKEN")
+BITRIX_ENV_REST_BASE = os.getenv("BITRIX_REST_BASE")  # e.g. https://dom.mesopharm.ru/rest/
 
 # ----------------------
 # Лог всех входящих запросов
@@ -218,6 +221,52 @@ def _normalize_rest_base(token_data: dict) -> str:
     return f"{BITRIX_DOMAIN.rstrip('/')}/rest/"
 
 
+def _refresh_oauth_token() -> tuple[str | None, str | None, dict | None]:
+    refresh_token = None
+    raw = _memory_token_cache.get("raw") or {}
+    # prefer memory, then ENV
+    if raw:
+        refresh_token = raw.get("refresh_token")
+    if not refresh_token:
+        refresh_token = BITRIX_ENV_REFRESH_TOKEN
+    if not refresh_token or not CLIENT_ID or not CLIENT_SECRET:
+        return None, None, None
+
+    # token endpoint: prefer domain-based, fallback to oauth.bitrix.info
+    rest_base = _normalize_rest_base(raw or {"domain": BITRIX_DOMAIN, "client_endpoint": BITRIX_ENV_REST_BASE})
+    domain = (raw or {}).get("domain") or BITRIX_DOMAIN
+    portal_token_url = f"{domain.rstrip('/')}/oauth/token/"
+    payload = {
+        "grant_type": "refresh_token",
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "refresh_token": refresh_token,
+    }
+    try:
+        r = requests.post(portal_token_url, data=payload, timeout=15)
+        if r.status_code == 200:
+            result = r.json()
+        else:
+            result = None
+    except Exception:
+        result = None
+    if result is None:
+        try:
+            r2 = requests.post("https://oauth.bitrix.info/oauth/token/", data=payload, timeout=15)
+            if r2.status_code == 200:
+                result = r2.json()
+        except Exception:
+            result = None
+    if not result or not result.get("access_token"):
+        return None, None, None
+    # cache in memory
+    _memory_token_cache["access_token"] = result.get("access_token")
+    # merge minimal info to keep domain/rest base
+    merged = {**(raw or {}), **result}
+    _memory_token_cache["raw"] = merged
+    return _memory_token_cache["access_token"], _normalize_rest_base(merged), merged
+
+
 def load_oauth_tokens():
     try:
         # 1) Memory cache first
@@ -239,9 +288,9 @@ def load_oauth_tokens():
     except Exception as e:
         print("⚠️ Не удалось загрузить token.json:", e)
         # 3) Environment fallback
-        env_access_token = os.getenv("BITRIX_ACCESS_TOKEN")
-        env_rest_base = os.getenv("BITRIX_REST_BASE")  # e.g. https://dom.mesopharm.ru/rest/
-        env_domain = os.getenv("BITRIX_DOMAIN")
+        env_access_token = BITRIX_ENV_ACCESS_TOKEN
+        env_rest_base = BITRIX_ENV_REST_BASE  # e.g. https://dom.mesopharm.ru/rest/
+        env_domain = BITRIX_DOMAIN
         if env_access_token and (env_rest_base or env_domain):
             data = {
                 "access_token": env_access_token,
@@ -268,6 +317,16 @@ def bitrix_call(method: str, payload: dict):
         r.raise_for_status()
         data = r.json()
         if "error" in data:
+            # try refresh on expired/invalid token
+            if data.get("error") in {"expired_token", "invalid_token", "NO_AUTH_FOUND", "INVALID_TOKEN"}:
+                new_access, new_rest, _raw = _refresh_oauth_token()
+                if new_access and new_rest:
+                    rr = requests.post(f"{new_rest}{method}", params={"auth": new_access}, json=payload, timeout=15)
+                    rr.raise_for_status()
+                    dd = rr.json()
+                    if "error" in dd:
+                        return None, dd
+                    return dd.get("result", dd), None
             return None, data
         return data.get("result", data), None
     except Exception as e:
