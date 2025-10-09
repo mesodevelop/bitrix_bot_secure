@@ -11,6 +11,7 @@ _memory_token_cache = {
 }
 _task_to_chat_map: dict[str, str] = {}
 _chat_to_task_map: dict[str, str] = {}
+_bot_state: dict[str, str | None] = {"bot_id": None}
 
 # Загружаем переменные окружения
 CLIENT_ID = os.getenv("BITRIX_CLIENT_ID")
@@ -19,6 +20,7 @@ BITRIX_DOMAIN = os.getenv("BITRIX_DOMAIN", "https://dom.mesopharm.ru")
 REDIRECT_URI = os.getenv("BITRIX_OAUTH_REDIRECT_URI", "https://bitrix-bot-537z.onrender.com/oauth/bitrix/callback")
 RENDER_URL = "https://bitrix-bot-537z.onrender.com"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_NOTIFY_CHAT_ID = os.getenv("TELEGRAM_NOTIFY_CHAT_ID")  # куда слать входящие из Bitrix IM
 BITRIX_ENV_ACCESS_TOKEN = os.getenv("BITRIX_ACCESS_TOKEN")
 BITRIX_ENV_REFRESH_TOKEN = os.getenv("BITRIX_REFRESH_TOKEN")
 BITRIX_ENV_REST_BASE = os.getenv("BITRIX_REST_BASE")  # e.g. https://dom.mesopharm.ru/rest/
@@ -662,6 +664,64 @@ def telegram_set_webhook():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
+
+# ----------------------
+# Bitrix IM Bot: register, status, events
+# ----------------------
+@app.route("/bot/status", methods=["GET"]) 
+def bot_status():
+    access_token, rest_base, raw = load_oauth_tokens()
+    return jsonify({
+        "has_access_token": bool(access_token),
+        "rest_base": rest_base,
+        "bot_id": _bot_state.get("bot_id"),
+        "events_url": f"{RENDER_URL}/bot/events",
+    })
+
+@app.route("/bot/register", methods=["POST", "GET"]) 
+def bot_register():
+    # Регистрируем IM бота, чтобы получать ONIMBOTMESSAGEADD на /bot/events
+    payload = {
+        "CODE": "support_bridge_bot",
+        "TYPE": "HUMAN",
+        "EVENT_MESSAGE_ADD": f"{RENDER_URL}/bot/events",
+        "EVENT_WELCOME_MESSAGE": f"{RENDER_URL}/bot/events",
+        "OPENLINE": "N",
+        "PROPERTIES": {
+            "NAME": "Бот техподдержки (мост)",
+            "COLOR": "GRAY",
+        },
+    }
+    result, err = bitrix_call("imbot.register", payload)
+    if err:
+        return jsonify({"ok": False, "error": err}), 500
+    bot_id = (result or {}).get("BOT_ID") or result
+    _bot_state["bot_id"] = str(bot_id)
+    return jsonify({"ok": True, "bot_id": _bot_state["bot_id"]})
+
+@app.route("/bot/events", methods=["POST"]) 
+def bot_events():
+    # Обрабатываем события из Bitrix IM (например, ONIMBOTMESSAGEADD)
+    body = request.get_json(silent=True) or {}
+    event = body.get("event") or body.get("event_name")
+    data = body.get("data") or {}
+    # Поддержка форматов Bitrix
+    if event == "ONIMBOTMESSAGEADD":
+        msg = (data.get("PARAMS") or {}).get("MESSAGE") or data.get("MESSAGE") or {}
+        dialog_id = msg.get("DIALOG_ID") or msg.get("CHAT_ID")
+        text = msg.get("TEXT") or ""
+        from_user = msg.get("FROM_USER_ID") or (data.get("USER") or {}).get("ID")
+        # Пересылаем в Telegram (в один заданный чат) — простой мост
+        if TELEGRAM_BOT_TOKEN and TELEGRAM_NOTIFY_CHAT_ID:
+            try:
+                requests.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                    json={"chat_id": TELEGRAM_NOTIFY_CHAT_ID, "text": f"[Bitrix IM] от {from_user} (dlg {dialog_id}):\n{text}"},
+                    timeout=10,
+                )
+            except Exception:
+                pass
+    return jsonify({"ok": True})
 
 # ----------------------
 # Diagnostics: view and manage chat↔task mappings
