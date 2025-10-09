@@ -631,12 +631,19 @@ def bot_events():
     body = request.get_json(silent=True) or {}
     event = body.get("event") or body.get("event_name")
     data = body.get("data") or {}
-    # Поддержка форматов Bitrix
+    # Поддержка разных форматов Bitrix: MESSAGE может быть строкой или объектом
     if event == "ONIMBOTMESSAGEADD":
-        msg = (data.get("PARAMS") or {}).get("MESSAGE") or data.get("MESSAGE") or {}
-        dialog_id = msg.get("DIALOG_ID") or msg.get("CHAT_ID")
-        text = msg.get("TEXT") or ""
-        from_user = msg.get("FROM_USER_ID") or (data.get("USER") or {}).get("ID")
+        params = data.get("PARAMS") or data
+        raw_message = params.get("MESSAGE") or data.get("MESSAGE")
+        if isinstance(raw_message, dict):
+            dialog_id = raw_message.get("DIALOG_ID") or raw_message.get("CHAT_ID") or params.get("DIALOG_ID") or params.get("CHAT_ID")
+            text = raw_message.get("TEXT") or ""
+            from_user = raw_message.get("FROM_USER_ID") or params.get("FROM_USER_ID") or (data.get("USER") or {}).get("ID")
+        else:
+            # MESSAGE строка; остальные поля лежат в PARAMS
+            dialog_id = params.get("DIALOG_ID") or params.get("CHAT_ID")
+            text = str(raw_message or "")
+            from_user = params.get("FROM_USER_ID") or (data.get("USER") or {}).get("ID")
         # Пересылаем в Telegram (в один заданный чат) — простой мост
         if TELEGRAM_BOT_TOKEN and TELEGRAM_NOTIFY_CHAT_ID:
             try:
