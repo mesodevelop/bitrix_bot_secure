@@ -631,6 +631,77 @@ def bot_send():
         return jsonify({"ok": False, "error": err}), 400
     return jsonify({"ok": True, "result": result, "bot_id": str(bot_id), "dialog_id": str(dialog_id)})
 
+@app.route("/bot/diagnose", methods=["GET"]) 
+def bot_diagnose():
+    # Автодиагностика конфигурации бота в портале и опциональная правка
+    want_url = f"{RENDER_URL}/bot/events"
+    try:
+        bot_id = request.args.get("BOT_ID") or request.args.get("bot_id") or _bot_state.get("bot_id") or ""
+        fix = str(request.args.get("fix", "0")).lower() in {"1", "true", "yes"}
+        info = None
+        resolved_bot_id = None
+
+        # Если bot_id известен — попробуем получить его конфиг напрямую
+        if bot_id:
+            rb = int(str(bot_id))
+            info, err = bitrix_call("imbot.bot.get", {"BOT_ID": rb})
+            if not err:
+                resolved_bot_id = rb
+        # Иначе попробуем найти по коду при регистрации
+        if not info:
+            listing, err = bitrix_call("imbot.bot.list", {})
+            if not err and isinstance(listing, list):
+                for b in listing:
+                    code = (b or {}).get("CODE") or (b or {}).get("code")
+                    if str(code).lower() in {"support_bridge_bot", "support_bot", "битрикс_мост"}:
+                        resolved_bot_id = (b or {}).get("BOT_ID") or (b or {}).get("ID")
+                        info = b
+                        break
+
+        if not info:
+            return jsonify({"ok": False, "error": "bot_not_found", "hint": "Передайте BOT_ID или зарегистрируйте бота /bot/register"}), 404
+
+        # Извлечь текущие обработчики
+        props = info.get("PROPERTIES") or {}
+        event_add  = info.get("EVENT_MESSAGE_ADD") or props.get("EVENT_MESSAGE_ADD")
+        event_welc = info.get("EVENT_WELCOME_MESSAGE") or props.get("EVENT_WELCOME_MESSAGE")
+        event_del  = info.get("EVENT_BOT_DELETE") or props.get("EVENT_BOT_DELETE")
+        mismatch = {
+            "EVENT_MESSAGE_ADD": event_add != want_url,
+            "EVENT_WELCOME_MESSAGE": event_welc != want_url,
+            "EVENT_BOT_DELETE": event_del != want_url,
+        }
+
+        result = {
+            "ok": True,
+            "bot_id": resolved_bot_id,
+            "current": {
+                "EVENT_MESSAGE_ADD": event_add,
+                "EVENT_WELCOME_MESSAGE": event_welc,
+                "EVENT_BOT_DELETE": event_del,
+            },
+            "expected": want_url,
+            "mismatch": mismatch,
+            "fix_applied": False,
+        }
+
+        # Опционально — исправить настройки
+        if fix and resolved_bot_id:
+            upd_payload = {
+                "BOT_ID": int(resolved_bot_id),
+                "EVENT_MESSAGE_ADD": want_url,
+                "EVENT_WELCOME_MESSAGE": want_url,
+                "EVENT_BOT_DELETE": want_url,
+            }
+            _upd, upd_err = bitrix_call("imbot.update", upd_payload)
+            result["fix_applied"] = upd_err is None
+            if upd_err:
+                result["fix_error"] = upd_err
+
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 @app.route("/bot/events", methods=["POST", "GET"]) 
 def bot_events():
     # GET — healthcheck/проверка доступности
