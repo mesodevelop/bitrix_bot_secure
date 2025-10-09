@@ -699,9 +699,13 @@ def bot_register():
     _bot_state["bot_id"] = str(bot_id)
     return jsonify({"ok": True, "bot_id": _bot_state["bot_id"]})
 
-@app.route("/bot/events", methods=["POST"]) 
+@app.route("/bot/events", methods=["POST", "GET"]) 
 def bot_events():
-    # Обрабатываем события из Bitrix IM (например, ONIMBOTMESSAGEADD)
+    # GET — healthcheck/проверка доступности
+    if request.method == "GET":
+        return jsonify({"ok": True, "message": "bot events endpoint is up"})
+
+    # POST — обработка событий из Bitrix IM (например, ONIMBOTMESSAGEADD)
     body = request.get_json(silent=True) or {}
     event = body.get("event") or body.get("event_name")
     data = body.get("data") or {}
