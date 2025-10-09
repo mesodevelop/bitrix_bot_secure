@@ -629,6 +629,42 @@ def telegram_set_webhook():
 
 
 # ----------------------
+# Diagnostics: view and manage chat↔task mappings
+# ----------------------
+@app.route("/debug/mappings", methods=["GET"]) 
+def debug_mappings():
+    return jsonify({
+        "task_to_chat": _task_to_chat_map,
+        "chat_to_task": _chat_to_task_map,
+        "note": "Для сброса используйте /chat/reset?chat_id=...; для привязки /chat/bind?chat_id=...&task_id=..."
+    })
+
+@app.route("/chat/reset", methods=["GET"]) 
+def chat_reset():
+    chat_id = request.args.get("chat_id")
+    if not chat_id:
+        return jsonify({"ok": False, "error": "chat_id is required"}), 400
+    task_id = _chat_to_task_map.pop(str(chat_id), None)
+    if task_id:
+        _task_to_chat_map.pop(str(task_id), None)
+    return jsonify({"ok": True, "cleared": {"chat_id": chat_id, "task_id": task_id}})
+
+@app.route("/chat/bind", methods=["GET", "POST"]) 
+def chat_bind():
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        chat_id = str(data.get("chat_id") or "")
+        task_id = str(data.get("task_id") or "")
+    else:
+        chat_id = request.args.get("chat_id") or ""
+        task_id = request.args.get("task_id") or ""
+    if not chat_id or not task_id:
+        return jsonify({"ok": False, "error": "chat_id and task_id are required"}), 400
+    _chat_to_task_map[str(chat_id)] = str(task_id)
+    _task_to_chat_map[str(task_id)] = str(chat_id)
+    return jsonify({"ok": True, "bound": {"chat_id": chat_id, "task_id": task_id}})
+
+# ----------------------
 # HTML страница для просмотра пользователей
 # ----------------------
 @app.route("/users/html", methods=["GET"])
