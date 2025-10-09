@@ -81,16 +81,26 @@ def root():
 # ----------------------
 # Ручная установка / OAuth-редирект
 # ----------------------
-@app.route("/install")
+@app.route("/install", methods=["GET", "POST"])
 def install():
+    # Bitrix может слать POST при установке приложения
+    if request.method == "POST":
+        # Принять установочный POST от портала (DOMAIN/APP_SID и т.п.)
+        return "OK", 200
+
     if not CLIENT_ID:
         return "❌ Ошибка: переменная окружения BITRIX_CLIENT_ID не задана", 500
+
+    # Страховка на случай некорректного REDIRECT_URI в окружении (например, без https)
+    redirect_uri = REDIRECT_URI
+    if not (isinstance(redirect_uri, str) and redirect_uri.startswith("http")):
+        redirect_uri = f"{RENDER_URL}/oauth/bitrix/callback"
 
     auth_url = (
         f"{BITRIX_DOMAIN}/oauth/authorize/"
         f"?client_id={CLIENT_ID}"
         f"&response_type=code"
-        f"&redirect_uri={REDIRECT_URI}"
+        f"&redirect_uri={redirect_uri}"
     )
     print(f"🔗 Перенаправляем на авторизацию: {auth_url}")
     return redirect(auth_url)
