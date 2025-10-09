@@ -629,21 +629,35 @@ def bot_events():
 
     # POST — обработка событий из Bitrix IM (например, ONIMBOTMESSAGEADD)
     body = request.get_json(silent=True) or {}
-    event = body.get("event") or body.get("event_name")
+    # Fallback: Bitrix может прислать application/x-www-form-urlencoded
+    if not body:
+        try:
+            form = request.form.to_dict(flat=False)
+            # Преобразуем одноэлементные списки в скаляры
+            body = {k: (v[0] if isinstance(v, list) and v else v) for k, v in form.items()}
+        except Exception:
+            body = {}
+    # Если поле data — строка, попробуем распарсить как JSON
+    if isinstance(body.get("data"), str):
+        try:
+            body["data"] = json.loads(body["data"])  # type: ignore[index]
+        except Exception:
+            pass
+    event = (body.get("event") or body.get("event_name") or request.values.get("event") or request.values.get("event_name"))
     data = body.get("data") or {}
     # Поддержка разных форматов Bitrix: MESSAGE может быть строкой или объектом
     if event == "ONIMBOTMESSAGEADD":
         params = data.get("PARAMS") or data
-        raw_message = params.get("MESSAGE") or data.get("MESSAGE")
+        raw_message = params.get("MESSAGE") or data.get("MESSAGE") or request.values.get("MESSAGE")
         if isinstance(raw_message, dict):
             dialog_id = raw_message.get("DIALOG_ID") or raw_message.get("CHAT_ID") or params.get("DIALOG_ID") or params.get("CHAT_ID")
             text = raw_message.get("TEXT") or ""
             from_user = raw_message.get("FROM_USER_ID") or params.get("FROM_USER_ID") or (data.get("USER") or {}).get("ID")
         else:
             # MESSAGE строка; остальные поля лежат в PARAMS
-            dialog_id = params.get("DIALOG_ID") or params.get("CHAT_ID")
+            dialog_id = params.get("DIALOG_ID") or params.get("CHAT_ID") or request.values.get("DIALOG_ID") or request.values.get("CHAT_ID")
             text = str(raw_message or "")
-            from_user = params.get("FROM_USER_ID") or (data.get("USER") or {}).get("ID")
+            from_user = params.get("FROM_USER_ID") or request.values.get("FROM_USER_ID") or (data.get("USER") or {}).get("ID")
         # Пересылаем в Telegram (в один заданный чат) — простой мост
         if TELEGRAM_BOT_TOKEN and TELEGRAM_NOTIFY_CHAT_ID:
             try:
