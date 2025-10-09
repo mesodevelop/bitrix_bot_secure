@@ -603,6 +603,47 @@ def bot_update():
         return jsonify({"ok": False, "error": err}), 400
     return jsonify({"ok": True, "result": result, "bot_id": bot_id})
 
+@app.route("/bot/reinstall", methods=["POST", "GET"]) 
+def bot_reinstall():
+    # Принудительная переустановка бота: unregister + register
+    try:
+        # 1) Определить текущий/указанный BOT_ID
+        provided_id = request.args.get("BOT_ID") or request.args.get("bot_id")
+        current_id = _bot_state.get("bot_id")
+        bot_id_to_remove = provided_id or current_id
+
+        # 2) Попробовать удалить старого бота (если есть)
+        if bot_id_to_remove:
+            _res, _err = bitrix_call("imbot.unregister", {"BOT_ID": int(bot_id_to_remove)})
+            # Игнорируем ошибку удаления — возможно, бот уже отсутствует
+
+        # 3) Зарегистрировать нового бота с корректными обработчиками
+        payload = {
+            "CODE": "support_bridge_bot",
+            "TYPE": "HUMAN",
+            "EVENT_MESSAGE_ADD": f"{RENDER_URL}/bot/events",
+            "EVENT_WELCOME_MESSAGE": f"{RENDER_URL}/bot/events",
+            "EVENT_BOT_DELETE": f"{RENDER_URL}/bot/events",
+            "OPENLINE": "N",
+            "PROPERTIES": {
+                "NAME": "Бот техподдержки (мост)",
+                "COLOR": "GRAY",
+            },
+        }
+        reg_result, reg_err = bitrix_call("imbot.register", payload)
+        if reg_err:
+            return jsonify({"ok": False, "error": reg_err}), 400
+        # Нормализуем идентификатор
+        new_bot_id = None
+        if isinstance(reg_result, dict):
+            new_bot_id = reg_result.get("BOT_ID") or reg_result.get("bot_id") or reg_result.get("result")
+        else:
+            new_bot_id = reg_result
+        _bot_state["bot_id"] = str(new_bot_id) if new_bot_id is not None else None
+        return jsonify({"ok": True, "old_bot_id": bot_id_to_remove, "bot_id": _bot_state["bot_id"], "raw": reg_result})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 # ----------------------
 # Bitrix IM Bot: send message via server bridge (uses auto-refresh tokens)
 # ----------------------
