@@ -316,16 +316,51 @@ def bitrix_call(method: str, payload: dict):
     url = f"{rest_base}{method}"
     try:
         r = requests.post(url, params={"auth": access_token}, json=payload, timeout=15)
-        r.raise_for_status()
-        data = r.json()
+        # Try to parse error body even on non-2xx to detect expired_token
+        if r.status_code >= 400:
+            try:
+                err_body = r.json()
+            except Exception:
+                err_body = {"error": "HTTP_ERROR", "error_description": r.text}
+            # Refresh on token problems
+            if (err_body or {}).get("error") in {"expired_token", "invalid_token", "NO_AUTH_FOUND", "INVALID_TOKEN"}:
+                new_access, new_rest, _raw = _refresh_oauth_token()
+                if new_access and new_rest:
+                    rr = requests.post(f"{new_rest}{method}", params={"auth": new_access}, json=payload, timeout=15)
+                    if rr.status_code >= 400:
+                        try:
+                            return None, rr.json()
+                        except Exception:
+                            return None, {"error": "HTTP_ERROR", "error_description": rr.text}
+                    try:
+                        dd = rr.json()
+                    except Exception:
+                        dd = {}
+                    if "error" in dd:
+                        return None, dd
+                    return dd.get("result", dd), None
+            # Not a token error — return as Bitrix error
+            return None, err_body
+        # Success path
+        try:
+            data = r.json()
+        except Exception:
+            data = {}
         if "error" in data:
-            # try refresh on expired/invalid token
+            # Secondary JSON error handling
             if data.get("error") in {"expired_token", "invalid_token", "NO_AUTH_FOUND", "INVALID_TOKEN"}:
                 new_access, new_rest, _raw = _refresh_oauth_token()
                 if new_access and new_rest:
                     rr = requests.post(f"{new_rest}{method}", params={"auth": new_access}, json=payload, timeout=15)
-                    rr.raise_for_status()
-                    dd = rr.json()
+                    if rr.status_code >= 400:
+                        try:
+                            return None, rr.json()
+                        except Exception:
+                            return None, {"error": "HTTP_ERROR", "error_description": rr.text}
+                    try:
+                        dd = rr.json()
+                    except Exception:
+                        dd = {}
                     if "error" in dd:
                         return None, dd
                     return dd.get("result", dd), None
