@@ -744,6 +744,34 @@ def bot_events():
     print(json.dumps(body, ensure_ascii=False, indent=2))
     print("===========================================\n")
 
+    # Автофорвард из Bitrix в Telegram
+    try:
+        event = body.get("event") or body.get("event_name") or ""
+        data = body.get("data") or {}
+        # Попытка извлечь текст сообщения и автора/диалог
+        msg = (
+            data.get("PARAMS", {}).get("MESSAGE")
+            or data.get("MESSAGE")
+            or {}
+        )
+        text = (msg.get("TEXT") or msg.get("text") or "").strip()
+        dialog_id = msg.get("DIALOG_ID") or msg.get("CHAT_ID") or data.get("DIALOG_ID")
+        from_id = msg.get("FROM_USER_ID") or data.get("FROM_USER_ID")
+
+        if event == "ONIMBOTMESSAGEADD" and text and TELEGRAM_BOT_TOKEN and TELEGRAM_NOTIFY_CHAT_ID:
+            caption = f"Сообщение из Bitrix (dialog={dialog_id}, from={from_id}):\n{text}"
+            try:
+                r = requests.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                    json={"chat_id": TELEGRAM_NOTIFY_CHAT_ID, "text": caption},
+                    timeout=10,
+                )
+                print("🔔 Telegram forward status:", r.status_code, r.text)
+            except Exception as e:
+                print("⚠️ Ошибка форварда в Telegram:", e)
+    except Exception as e:
+        print("⚠️ Исключение при обработке событий Bitrix:", e)
+
     return jsonify({"ok": True})
 
 # ----------------------
