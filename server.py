@@ -328,12 +328,22 @@ def bitrix_call(method: str, payload: dict):
         r = requests.post(url, params={"auth": access_token}, json=payload, timeout=15)
         # Try to parse error body even on non-2xx to detect expired_token
         if r.status_code >= 400:
+            err_text = r.text or ""
+            content_type = r.headers.get("content-type", "")
             try:
-                err_body = r.json()
+                err_body = r.json() if content_type.startswith("application/json") else {}
             except Exception:
-                err_body = {"error": "HTTP_ERROR", "error_description": r.text}
-            # Refresh on token problems
-            if (err_body or {}).get("error") in {"expired_token", "invalid_token", "NO_AUTH_FOUND", "INVALID_TOKEN"}:
+                err_body = {}
+            # Normalize error reason text
+            err_descr = (err_body.get("error_description") or err_text or "").lower()
+            err_code = (err_body.get("error") or "").upper()
+            # Trigger refresh on known signals
+            token_problem = (
+                err_code in {"EXPIRED_TOKEN", "INVALID_TOKEN", "NO_AUTH_FOUND", "INVALID_AUTH"}
+                or "access token" in err_descr and "expire" in err_descr
+                or "token" in err_descr and "expired" in err_descr
+            )
+            if token_problem:
                 new_access, new_rest, _raw = _refresh_oauth_token()
                 if new_access and new_rest:
                     rr = requests.post(f"{new_rest}{method}", params={"auth": new_access}, json=payload, timeout=15)
@@ -349,8 +359,10 @@ def bitrix_call(method: str, payload: dict):
                     if "error" in dd:
                         return None, dd
                     return dd.get("result", dd), None
-            # Not a token error — return as Bitrix error
-            return None, err_body
+            # Not a token error — return as Bitrix error (JSON if available)
+            if err_body:
+                return None, err_body
+            return None, {"error": "HTTP_ERROR", "error_description": err_text, "status": r.status_code}
         # Success path
         try:
             data = r.json()
@@ -358,7 +370,8 @@ def bitrix_call(method: str, payload: dict):
             data = {}
         if "error" in data:
             # Secondary JSON error handling
-            if data.get("error") in {"expired_token", "invalid_token", "NO_AUTH_FOUND", "INVALID_TOKEN"}:
+            err_descr2 = (data.get("error_description") or "").lower()
+            if data.get("error") in {"expired_token", "invalid_token", "NO_AUTH_FOUND", "INVALID_TOKEN"} or ("access token" in err_descr2 and "expire" in err_descr2):
                 new_access, new_rest, _raw = _refresh_oauth_token()
                 if new_access and new_rest:
                     rr = requests.post(f"{new_rest}{method}", params={"auth": new_access}, json=payload, timeout=15)
