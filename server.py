@@ -654,8 +654,7 @@ def bot_update():
     else:
         bot_id = int(request.args.get("BOT_ID") or request.args.get("bot_id") or 19508)
 
-    payload = {
-        "BOT_ID": bot_id,
+    fields = {
         "EVENT_MESSAGE_ADD": f"{RENDER_URL}/bot/events",
         "EVENT_WELCOME_MESSAGE": f"{RENDER_URL}/bot/events",
         "EVENT_BOT_DELETE": f"{RENDER_URL}/bot/events",
@@ -664,6 +663,10 @@ def bot_update():
             "NAME": "Бот техподдержки",
             "COLOR": "GRAY",
         },
+    }
+    payload = {
+        "BOT_ID": bot_id,
+        "FIELDS": fields,
     }
     result, err = bitrix_call("imbot.update", payload)
     if err:
