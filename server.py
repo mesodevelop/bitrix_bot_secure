@@ -744,117 +744,29 @@ def bot_diagnose():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-@app.route("/bot/events", methods=["POST", "GET"]) 
+@app.route("/bot/events", methods=["POST", "GET"])
 def bot_events():
-    # GET — healthcheck
     if request.method == "GET":
         return jsonify({"ok": True, "message": "bot events endpoint is up"})
 
+    # Пробуем получить JSON или форму (Bitrix может прислать form-urlencoded)
     body = request.get_json(silent=True) or {}
-
-    # Bitrix иногда присылает form-urlencoded
     if not body:
         try:
-            form = request.form.to_dict(flat=False)
-            body = {k: (v[0] if isinstance(v, list) and v else v) for k, v in form.items()}
+            body = request.form.to_dict(flat=False)
         except Exception:
             body = {}
 
-    # Если data — строка, пробуем распарсить JSON
+    # Если внутри есть строка JSON — тоже парсим
     if isinstance(body.get("data"), str):
         try:
             body["data"] = json.loads(body["data"])
         except Exception:
             pass
 
-    event = (
-        body.get("event")
-        or body.get("event_name")
-        or request.values.get("event")
-        or request.values.get("event_name")
-    )
-    data = body.get("data") or {}
-
-    if event == "ONIMBOTMESSAGEADD":
-        params = data.get("PARAMS") or data
-        raw_message = params.get("MESSAGE") or data.get("MESSAGE") or request.values.get("MESSAGE")
-
-        if isinstance(raw_message, dict):
-            dialog_id = (
-                raw_message.get("DIALOG_ID")
-                or raw_message.get("CHAT_ID")
-                or params.get("DIALOG_ID")
-                or params.get("CHAT_ID")
-            )
-            text = raw_message.get("TEXT") or ""
-            from_user = (
-                raw_message.get("FROM_USER_ID")
-                or params.get("FROM_USER_ID")
-                or (data.get("USER") or {}).get("ID")
-            )
-        else:
-            dialog_id = (
-                params.get("DIALOG_ID")
-                or params.get("CHAT_ID")
-                or request.values.get("DIALOG_ID")
-                or request.values.get("CHAT_ID")
-            )
-            text = str(raw_message or "")
-            from_user = (
-                params.get("FROM_USER_ID")
-                or request.values.get("FROM_USER_ID")
-                or (data.get("USER") or {}).get("ID")
-            )
-
-        # --- 🔧 Новая логика: пересылка в связанный Telegram чат ---
-        # Пытаемся найти Telegram чат по связанной задаче или диалогу
-        chat_id = None
-        if dialog_id and str(dialog_id) in _task_to_chat_map:
-            chat_id = _task_to_chat_map.get(str(dialog_id))
-        elif str(dialog_id) in _chat_to_task_map.values():
-            # Если наоборот, попробуем обратное сопоставление
-            for t_id, c_id in _task_to_chat_map.items():
-                if t_id == str(dialog_id):
-                    chat_id = c_id
-                    break
-
-        if TELEGRAM_BOT_TOKEN and chat_id:
-            try:
-                requests.post(
-                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                    json={
-                        "chat_id": chat_id,
-                        "text": f"[Bitrix] {text}"
-                    },
-                    timeout=10,
-                )
-                print(f"💬 Сообщение из Bitrix отправлено в Telegram чат {chat_id}")
-            except Exception as e:
-                print("⚠️ Ошибка при отправке в Telegram:", e)
-        elif TELEGRAM_BOT_TOKEN and TELEGRAM_NOTIFY_CHAT_ID:
-            # Если нет маппинга — шлём в дефолтный чат для мониторинга
-            try:
-                requests.post(
-                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                    json={
-                        "chat_id": TELEGRAM_NOTIFY_CHAT_ID,
-                        "text": f"[Bitrix IM] от {from_user} (dlg {dialog_id}):\n{text}"
-                    },
-                    timeout=10,
-                )
-            except Exception as e:
-                print("⚠️ Ошибка пересылки в Telegram notify чат:", e)
-
-        # --- Автоответ "Принято" в сам Bitrix диалог ---
-        try:
-            if dialog_id and _bot_state.get("bot_id"):
-                _ = bitrix_call("imbot.message.add", {
-                    "BOT_ID": int(_bot_state.get("bot_id")),
-                    "DIALOG_ID": dialog_id,
-                    "MESSAGE": "Принято",
-                })
-        except Exception:
-            pass
+    print("\n====== 📥 ПРИШЛО СООБЩЕНИЕ ОТ BITRIX ======")
+    print(json.dumps(body, ensure_ascii=False, indent=2))
+    print("===========================================\n")
 
     return jsonify({"ok": True})
 
