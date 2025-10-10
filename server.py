@@ -27,6 +27,9 @@ BITRIX_ENV_ACCESS_TOKEN = os.getenv("BITRIX_ACCESS_TOKEN")
 BITRIX_ENV_REFRESH_TOKEN = os.getenv("BITRIX_REFRESH_TOKEN")
 BITRIX_ENV_REST_BASE = os.getenv("BITRIX_REST_BASE")  # e.g. https://dom.mesopharm.ru/rest/
 
+ACCESS_TOKEN_FILE = "access_token.json"
+_bot_state = {}
+
 # ----------------------
 # Лог всех входящих запросов
 # ----------------------
@@ -79,31 +82,67 @@ def root():
 
 
 # ----------------------
-# Ручная установка / OAuth-редирект
-# ----------------------
+# === /install — установка из Bitrix ===
 @app.route("/install", methods=["GET", "POST"])
 def install():
-    # Bitrix может слать POST при установке приложения
-    if request.method == "POST":
-        # Принять установочный POST от портала (DOMAIN/APP_SID и т.п.)
-        return "OK", 200
+    """
+    Эндпоинт вызывается при установке приложения в Bitrix24.
+    Bitrix передаёт параметр CODE (авторизационный код)
+    """
+    code = request.args.get("code") or request.form.get("CODE")
 
-    if not CLIENT_ID:
-        return "❌ Ошибка: переменная окружения BITRIX_CLIENT_ID не задана", 500
+    if not code:
+        return jsonify({"error": "No CODE parameter"}), 400
 
-    # Страховка на случай некорректного REDIRECT_URI в окружении (например, без https)
-    redirect_uri = REDIRECT_URI
-    if not (isinstance(redirect_uri, str) and redirect_uri.startswith("http")):
-        redirect_uri = f"{RENDER_URL}/oauth/bitrix/callback"
+    # Обмениваем code → access_token
+    token_url = f"{BITRIX_DOMAIN}/oauth/token/"
+    data = {
+        "grant_type": "authorization_code",
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "code": code,
+        "redirect_uri": REDIRECT_URI,
+    }
+    r = requests.post(token_url, data=data)
+    try:
+        token_data = r.json()
+    except Exception:
+        return jsonify({"error": "Invalid response", "raw": r.text}), 500
 
-    auth_url = (
-        f"{BITRIX_DOMAIN}/oauth/authorize/"
-        f"?client_id={CLIENT_ID}"
-        f"&response_type=code"
-        f"&redirect_uri={redirect_uri}"
-    )
-    print(f"🔗 Перенаправляем на авторизацию: {auth_url}")
-    return redirect(auth_url)
+    # Сохраняем токен локально
+    with open(ACCESS_TOKEN_FILE, "w") as f:
+        json.dump(token_data, f)
+
+    access_token = token_data.get("access_token")
+    if not access_token:
+        return jsonify({"error": "No access_token", "response": token_data}), 400
+
+    # === Регистрируем бота ===
+    payload = {
+        "CODE": "support_bridge_bot",
+        "TYPE": "HUMAN",
+        "EVENT_MESSAGE_ADD": f"{RENDER_URL}/bot/events",
+        "EVENT_WELCOME_MESSAGE": f"{RENDER_URL}/bot/events",
+        "EVENT_BOT_DELETE": f"{RENDER_URL}/bot/events",
+        "OPENLINE": "N",
+        "PROPERTIES": {
+            "NAME": "Бот техподдержки (мост)",
+            "COLOR": "GRAY",
+        },
+    }
+    result, err = bitrix_call("imbot.register", payload, token=access_token)
+    if err:
+        return jsonify({"error": err}), 500
+
+    bot_id = str(result.get("BOT_ID") if isinstance(result, dict) else result)
+    _bot_state["bot_id"] = bot_id
+
+    return jsonify({
+        "ok": True,
+        "bot_id": bot_id,
+        "token": access_token,
+        "raw": result
+    })
 
 # Альтернативный путь для совместимости с документацией
 @app.route("/oauth/install")
@@ -114,74 +153,14 @@ def oauth_install():
 # ----------------------
 # Callback после OAuth
 # ----------------------
-@app.route("/oauth/bitrix/callback", methods=["GET", "POST"])
+# === /oauth/bitrix/callback — редирект из Bitrix (для совместимости) ===
+@app.route("/oauth/bitrix/callback", methods=["GET"])
 def oauth_callback():
-    code = request.args.get("code") or request.form.get("code")
-    cb_domain = request.args.get("domain")  # dom.mesopharm.ru
-    member_id = request.args.get("member_id")
-
+    code = request.args.get("code")
     if not code:
-        return "❌ Ошибка: отсутствует параметр code", 400
+        return jsonify({"error": "Missing code"}), 400
 
-    data = {
-        "grant_type": "authorization_code",
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-        "redirect_uri": REDIRECT_URI,
-        "code": code,
-    }
-
-    # Сначала пробуем доменный эндпоинт портала
-    portal_token_url = f"{BITRIX_DOMAIN}/oauth/token/"
-    print(f"🔑 Пробуем получить токен у портала: {portal_token_url}")
-    try:
-        r = requests.post(portal_token_url, data=data, timeout=15)
-        print("Ответ портала (raw):", r.text)
-        if r.status_code == 200:
-            result = r.json()
-        else:
-            result = None
-    except Exception as e:
-        print("⚠️ Ошибка портального эндпоинта:", e)
-        result = None
-
-    # Если не удалось — пробуем официальный облачный эндпоинт
-    if result is None:
-        global_token_url = "https://oauth.bitrix.info/oauth/token/"
-        print(f"🔁 Портал не вернул токен. Пробуем: {global_token_url}")
-        try:
-            r2 = requests.post(global_token_url, data=data, timeout=15)
-            print("Ответ oauth.bitrix.info (raw):", r2.text)
-            if r2.status_code != 200:
-                return jsonify({
-                    "error": "token_exchange_failed",
-                    "portal_status": getattr(r, 'status_code', None),
-                    "portal_body": getattr(r, 'text', None),
-                    "global_status": r2.status_code,
-                    "global_body": r2.text,
-                }), 502
-            result = r2.json()
-        except Exception as e:
-            return jsonify({
-                "error": "both_token_requests_failed",
-                "portal_error": str(e),
-            }), 502
-
-    # Заполняем домен/участника, если не пришли
-    if cb_domain and not result.get("domain"):
-        result["domain"] = f"https://{cb_domain}"
-    if member_id and not result.get("member_id"):
-        result["member_id"] = member_id
-
-    try:
-        with open("token.json", "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
-        # also cache in memory
-        _memory_token_cache["access_token"] = result.get("access_token")
-        _memory_token_cache["raw"] = result
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return redirect(f"/install?code={code}", code=302)
 
 
 # ----------------------
@@ -292,65 +271,16 @@ def load_oauth_tokens():
         return None, None, None
 
 
-def bitrix_call(method: str, payload: dict):
-    access_token, rest_base, _ = load_oauth_tokens()
-    if not access_token or not rest_base:
-        return None, {"error": "missing_tokens", "error_description": "Нет OAuth токенов или REST базы"}
-    url = f"{rest_base}{method}"
+# === Хелпер для REST-запросов ===
+def bitrix_call(method, payload, token=None):
+    url = f"{BITRIX_DOMAIN}/rest/{method}.json"
+    if token:
+        payload["auth"] = token
+    r = requests.post(url, json=payload, timeout=10)
     try:
-        r = requests.post(url, params={"auth": access_token}, json=payload, timeout=15)
-        # Try to parse error body even on non-2xx to detect expired_token
-        if r.status_code >= 400:
-            try:
-                err_body = r.json()
-            except Exception:
-                err_body = {"error": "HTTP_ERROR", "error_description": r.text}
-            # Refresh on token problems
-            if (err_body or {}).get("error") in {"expired_token", "invalid_token", "NO_AUTH_FOUND", "INVALID_TOKEN"}:
-                new_access, new_rest, _raw = _refresh_oauth_token()
-                if new_access and new_rest:
-                    rr = requests.post(f"{new_rest}{method}", params={"auth": new_access}, json=payload, timeout=15)
-                    if rr.status_code >= 400:
-                        try:
-                            return None, rr.json()
-                        except Exception:
-                            return None, {"error": "HTTP_ERROR", "error_description": rr.text}
-                    try:
-                        dd = rr.json()
-                    except Exception:
-                        dd = {}
-                    if "error" in dd:
-                        return None, dd
-                    return dd.get("result", dd), None
-            # Not a token error — return as Bitrix error
-            return None, err_body
-        # Success path
-        try:
-            data = r.json()
-        except Exception:
-            data = {}
-        if "error" in data:
-            # Secondary JSON error handling
-            if data.get("error") in {"expired_token", "invalid_token", "NO_AUTH_FOUND", "INVALID_TOKEN"}:
-                new_access, new_rest, _raw = _refresh_oauth_token()
-                if new_access and new_rest:
-                    rr = requests.post(f"{new_rest}{method}", params={"auth": new_access}, json=payload, timeout=15)
-                    if rr.status_code >= 400:
-                        try:
-                            return None, rr.json()
-                        except Exception:
-                            return None, {"error": "HTTP_ERROR", "error_description": rr.text}
-                    try:
-                        dd = rr.json()
-                    except Exception:
-                        dd = {}
-                    if "error" in dd:
-                        return None, dd
-                    return dd.get("result", dd), None
-            return None, data
-        return data.get("result", data), None
-    except Exception as e:
-        return None, {"error": "request_failed", "error_description": str(e)}
+        return r.json().get("result"), r.json().get("error")
+    except Exception:
+        return None, r.text
 
 
 # ----------------------
