@@ -414,6 +414,41 @@ def oauth_debug():
         "has_client_secret": bool(CLIENT_SECRET),
     })
 
+@app.route("/oauth/token", methods=["GET"]) 
+def oauth_token_view():
+    """Show masked access token. Pass full=1 to return full token (use cautiously)."""
+    token = _memory_token_cache.get("access_token") or os.getenv("BITRIX_ACCESS_TOKEN")
+    if not token:
+        return jsonify({"has_access_token": False}), 404
+    show_full = str(request.args.get("full", "0")).lower() in {"1", "true", "yes"}
+    masked = token if show_full else (token[:6] + "..." + token[-6:])
+    return jsonify({"has_access_token": True, "access_token": masked, "full": show_full})
+
+@app.route("/oauth/introspect", methods=["GET"]) 
+def oauth_introspect():
+    """Call app.info with current token to verify validity and scopes (without showing the token)."""
+    token = _memory_token_cache.get("access_token") or os.getenv("BITRIX_ACCESS_TOKEN")
+    if not token:
+        return jsonify({"ok": False, "error": "no_token"}), 404
+    # Use REST base from current status
+    access_token, rest_base, _ = load_oauth_tokens()
+    if not rest_base:
+        rest_base = (os.getenv("BITRIX_REST_BASE") or (os.getenv("BITRIX_DOMAIN") or "").rstrip("/") + "/rest/")
+    try:
+        r = requests.get(f"{rest_base}app.info", params={"auth": token}, timeout=10)
+        body = {}
+        try:
+            body = r.json()
+        except Exception:
+            body = {"raw": r.text}
+        return jsonify({
+            "ok": r.ok,
+            "status": r.status_code,
+            "response": body,
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 
 # ----------------------
 # Telegram webhook: принимает сообщения и создаёт/комментирует задачу в Bitrix
