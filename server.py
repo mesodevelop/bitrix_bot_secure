@@ -82,34 +82,33 @@ def root():
 
 
 # ----------------------
+_bot_state = {"auth": None, "bot_id": None}  # глобальное состояние
 # === /install — установка из Bitrix ===
 @app.route("/install", methods=["POST", "GET"])
 def install():
     try:
-        # Bitrix передаёт параметры в query string
-        domain = request.args.get("DOMAIN")
-        protocol = request.args.get("PROTOCOL", "1")
-        lang = request.args.get("LANG", "ru")
-        app_sid = request.args.get("APP_SID")
+        data = request.get_json(silent=True) or {}
+        query = request.args.to_dict()
 
+        domain = query.get("DOMAIN")
+        app_sid = query.get("APP_SID")
+
+        auth = data.get("auth") or {}
         if not domain:
             return jsonify({"ok": False, "error": "Missing DOMAIN"}), 400
 
-        # Логирование для отладки
-        print("📦 Install called from:", domain, "APP_SID:", app_sid)
+        print("📦 Install called from:", domain)
+        if auth:
+            print("🔑 Auth received:", auth)
+            _bot_state["auth"] = auth  # сохраняем токен
 
-        # Формируем URL приложения для Bitrix (где у тебя events и прочее)
-        install_url = f"{RENDER_URL}/"
-
-        # Возвращаем JSON с настройками для Bitrix
         return jsonify({
             "result": "success",
             "data": {
                 "install": True,
-                "url": install_url,
                 "domain": domain,
-                "lang": lang,
-                "protocol": protocol,
+                "url": f"{RENDER_URL}/",
+                "auth_saved": bool(auth)
             },
             "ok": True
         }), 200
@@ -246,15 +245,25 @@ def load_oauth_tokens():
 
 
 # === Хелпер для REST-запросов ===
-def bitrix_call(method, payload, token=None):
-    url = f"{BITRIX_DOMAIN}/rest/{method}.json"
-    if token:
-        payload["auth"] = token
-    r = requests.post(url, json=payload, timeout=10)
+def bitrix_call(method, payload=None):
+    if not _bot_state.get("auth"):
+        return None, "NO_AUTH_FOUND"
+
+    domain = _bot_state["auth"].get("domain") or "dom.mesopharm.ru"
+    token = _bot_state["auth"].get("access_token")
+    if not token:
+        return None, "NO_ACCESS_TOKEN"
+
+    url = f"https://{domain}/rest/{method}.json"
+    params = {"auth": token}
     try:
-        return r.json().get("result"), r.json().get("error")
-    except Exception:
-        return None, r.text
+        resp = requests.post(url, json=payload or {}, params=params, timeout=10)
+        data = resp.json()
+        if "error" in data:
+            return None, data["error_description"]
+        return data.get("result"), None
+    except Exception as e:
+        return None, str(e)
 
 
 # ----------------------
