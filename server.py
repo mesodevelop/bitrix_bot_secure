@@ -65,12 +65,12 @@ def root():
         </style>
     </head>
     <body>
-        <div class="container">
-            <div class="status">✅ Bitrix Bot Server работает!</div>
-            <div class="links">
-                <a href="/oauth/status">/oauth/status</a>
-                <a href="/bot/status">/bot/status</a>
-                <a href="/debug/mappings">/debug/mappings</a>
+        <div class=\"container\">
+            <div class=\"status\">✅ Bitrix Bot Server работает!</div>
+            <div class=\"links\">
+                <a href=\"/oauth/status\">/oauth/status</a>
+                <a href=\"/bot/status\">/bot/status</a>
+                <a href=\"/debug/mappings\">/debug/mappings</a>
             </div>
         </div>
     </body>
@@ -83,14 +83,26 @@ def root():
 # ----------------------
 @app.route("/install", methods=["GET", "POST"])
 def install():
-    print("\n⚙️ Установка приложения Bitrix...")
+    """
+    Bitrix вызывает этот маршрут при установке приложения.
+    Здесь мы регистрируем бота через REST-вебхук.
+    """
+    print("\n⚙️ Установка приложения из Bitrix...")
     print("Параметры запроса:", request.args.to_dict())
 
-    # Bitrix ждёт успешный ответ (HTTP 200)
-    return jsonify({
-        "ok": True,
-        "message": "Установка обработана, бот будет зарегистрирован Bitrix"
-    })
+    # Попробуем зарегистрировать бота
+    new_id = register_bot()
+    if new_id:
+        return jsonify({
+            "ok": True,
+            "message": "Бот успешно зарегистрирован",
+            "bot_id": new_id
+        })
+    else:
+        return jsonify({
+            "ok": False,
+            "message": "Не удалось зарегистрировать бота"
+        }), 500
 
 # Альтернативный путь для совместимости с документацией
 @app.route("/oauth/install")
@@ -160,15 +172,29 @@ def oauth_callback():
     if member_id and not result.get("member_id"):
         result["member_id"] = member_id
 
+    # Кэшируем в памяти вместо записи в файл
+    _memory_token_cache["access_token"] = result.get("access_token")
+    _memory_token_cache["raw"] = result
+
+    # Проверим scopes и при наличии imbot/im — автозарегистрируем бота
     try:
-        with open("token.json", "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
-        # also cache in memory
-        _memory_token_cache["access_token"] = result.get("access_token")
-        _memory_token_cache["raw"] = result
-        return jsonify(result)
+        info, err = bitrix_call("app.info", {})
+        scopes = []
+        if not err and isinstance(info, dict):
+            # app.info возвращает список scope в разных форматах; пробуем извлечь
+            scopes = info.get("scope") or info.get("SCOPE") or []
+            if isinstance(scopes, str):
+                scopes = scopes.split(",")
+            scopes = [s.strip().lower() for s in scopes]
+        if "imbot" in scopes and "im" in scopes:
+            print("🔧 Найдены нужные права (imbot, im) — регистрируем бота...")
+            register_bot()
+        else:
+            print("ℹ️ Права imbot/im не обнаружены, пропускаем авто-регистрацию.")
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print("⚠️ Ошибка при проверке прав/авторегистрации:", e)
+
+    return jsonify({"ok": True})
 
 
 # ----------------------
@@ -205,7 +231,6 @@ def _refresh_oauth_token() -> tuple[str | None, str | None, dict | None]:
         return None, None, None
 
     # token endpoint: prefer domain-based, fallback to oauth.bitrix.info
-    rest_base = _normalize_rest_base(raw or {"domain": BITRIX_DOMAIN, "client_endpoint": BITRIX_ENV_REST_BASE})
     domain = (raw or {}).get("domain") or BITRIX_DOMAIN
     portal_token_url = f"{domain.rstrip('/')}/oauth/token/"
     payload = {
@@ -247,19 +272,7 @@ def load_oauth_tokens():
             access_token = _memory_token_cache["access_token"]
             rest_base = _normalize_rest_base(data)
             return access_token, rest_base, data
-
-        # 2) token.json on disk
-        with open("token.json", "r", encoding="utf-8") as f:
-            data = json.load(f)
-        access_token = data.get("access_token")
-        rest_base = _normalize_rest_base(data)
-        # populate memory cache
-        _memory_token_cache["access_token"] = access_token
-        _memory_token_cache["raw"] = data
-        return access_token, rest_base, data
-    except Exception as e:
-        print("⚠️ Не удалось загрузить token.json:", e)
-        # 3) Environment fallback
+        # 2) Environment fallback
         env_access_token = BITRIX_ENV_ACCESS_TOKEN
         env_rest_base = BITRIX_ENV_REST_BASE  # e.g. https://dom.mesopharm.ru/rest/
         env_domain = BITRIX_DOMAIN
@@ -276,6 +289,9 @@ def load_oauth_tokens():
             _memory_token_cache["raw"] = data
             print("✅ Загрузка OAuth токена из ENV")
             return access_token, rest_base, data
+        return None, None, None
+    except Exception as e:
+        print("⚠️ Ошибка при загрузке токена:", e)
         return None, None, None
 
 
@@ -341,12 +357,42 @@ def bitrix_call(method: str, payload: dict):
 
 
 # ----------------------
+# Регистрация бота (helper)
+# ----------------------
+
+def register_bot() -> str | None:
+    payload = {
+        "CODE": "support_bridge_bot",
+        "TYPE": "HUMAN",
+        "EVENT_MESSAGE_ADD": f"{RENDER_URL}/bot/events",
+        "EVENT_WELCOME_MESSAGE": f"{RENDER_URL}/bot/events",
+        "EVENT_BOT_DELETE": f"{RENDER_URL}/bot/events",
+        "OPENLINE": "N",
+        "PROPERTIES": {
+            "NAME": "Бот техподдержки (мост)",
+            "COLOR": "GRAY",
+        },
+    }
+    result, err = bitrix_call("imbot.register", payload)
+    if err:
+        print("⚠️ Ошибка регистрации бота:", err)
+        return None
+    bot_id = None
+    if isinstance(result, dict):
+        bot_id = result.get("BOT_ID") or result.get("bot_id") or result.get("result")
+    else:
+        bot_id = result
+    _bot_state["bot_id"] = str(bot_id) if bot_id is not None else None
+    return _bot_state["bot_id"]
+
+
+# ----------------------
 # Статус OAuth: есть ли токен и какой домен
 # ----------------------
 @app.route("/oauth/status", methods=["GET"])
 def oauth_status():
     access_token, rest_base, raw = load_oauth_tokens()
-    source = "memory" if _memory_token_cache.get("access_token") else ("file" if os.path.exists("token.json") else ("env" if os.getenv("BITRIX_ACCESS_TOKEN") else "none"))
+    source = "memory" if _memory_token_cache.get("access_token") else ("env" if os.getenv("BITRIX_ACCESS_TOKEN") else "none")
     return jsonify({
         "has_access_token": bool(access_token),
         "domain": raw.get("domain") if isinstance(raw, dict) else None,
@@ -357,11 +403,6 @@ def oauth_status():
         "source": source,
     })
 
- 
-
- 
-
- 
 
 # Безопасный дебаг, чтобы убедиться в корректных настройках (без секретов)
 @app.route("/oauth/debug", methods=["GET"])
@@ -375,7 +416,7 @@ def oauth_debug():
 
 
 # ----------------------
-# Telegram webhook: принимает сообщения и создаёт задачу в Bitrix
+# Telegram webhook: принимает сообщения и создаёт/комментирует задачу в Bitrix
 # ----------------------
 @app.route("/telegram/webhook", methods=["GET", "POST"]) 
 def telegram_webhook():
@@ -487,7 +528,6 @@ def bitrix_events():
 
     chat_id = _task_to_chat_map.get(task_id)
     if not chat_id:
-        # Try to enrich mapping via REST (load last 1 comment and infer?) — skip for now
         return jsonify({"ok": False, "error": "chat mapping not found for task", "task_id": task_id}), 404
 
     if TELEGRAM_BOT_TOKEN:
@@ -542,29 +582,10 @@ def bot_status():
 @app.route("/bot/register", methods=["POST", "GET"]) 
 def bot_register():
     # Регистрируем IM бота, чтобы получать ONIMBOTMESSAGEADD на /bot/events
-    payload = {
-        "CODE": "support_bridge_bot",
-        "TYPE": "HUMAN",
-        "EVENT_MESSAGE_ADD": f"{RENDER_URL}/bot/events",
-        "EVENT_WELCOME_MESSAGE": f"{RENDER_URL}/bot/events",
-        "EVENT_BOT_DELETE": f"{RENDER_URL}/bot/events",
-        "OPENLINE": "N",
-        "PROPERTIES": {
-            "NAME": "Бот техподдержки (мост)",
-            "COLOR": "GRAY",
-        },
-    }
-    result, err = bitrix_call("imbot.register", payload)
-    if err:
-        return jsonify({"ok": False, "error": err}), 400
-    # Bitrix may return plain ID or object with BOT_ID
-    bot_id = None
-    if isinstance(result, dict):
-        bot_id = result.get("BOT_ID") or result.get("bot_id") or result.get("result")
-    else:
-        bot_id = result
-    _bot_state["bot_id"] = str(bot_id) if bot_id is not None else None
-    return jsonify({"ok": True, "bot_id": _bot_state["bot_id"], "raw": result})
+    new_id = register_bot()
+    if not new_id:
+        return jsonify({"ok": False, "error": "bot_register_failed"}), 400
+    return jsonify({"ok": True, "bot_id": new_id})
 
 @app.route("/bot/update", methods=["POST", "GET"]) 
 def bot_update():
@@ -606,132 +627,14 @@ def bot_reinstall():
             # Игнорируем ошибку удаления — возможно, бот уже отсутствует
 
         # 3) Зарегистрировать нового бота с корректными обработчиками
-        payload = {
-            "CODE": "support_bridge_bot",
-            "TYPE": "HUMAN",
-            "EVENT_MESSAGE_ADD": f"{RENDER_URL}/bot/events",
-            "EVENT_WELCOME_MESSAGE": f"{RENDER_URL}/bot/events",
-            "EVENT_BOT_DELETE": f"{RENDER_URL}/bot/events",
-            "OPENLINE": "N",
-            "PROPERTIES": {
-                "NAME": "Бот техподдержки (мост)",
-                "COLOR": "GRAY",
-            },
-        }
-        reg_result, reg_err = bitrix_call("imbot.register", payload)
-        if reg_err:
-            return jsonify({"ok": False, "error": reg_err}), 400
-        # Нормализуем идентификатор
-        new_bot_id = None
-        if isinstance(reg_result, dict):
-            new_bot_id = reg_result.get("BOT_ID") or reg_result.get("bot_id") or reg_result.get("result")
-        else:
-            new_bot_id = reg_result
-        _bot_state["bot_id"] = str(new_bot_id) if new_bot_id is not None else None
-        return jsonify({"ok": True, "old_bot_id": bot_id_to_remove, "bot_id": _bot_state["bot_id"], "raw": reg_result})
+        new_id = register_bot()
+        if not new_id:
+            return jsonify({"ok": False, "error": "bot_register_failed"}), 400
+        return jsonify({"ok": True, "old_bot_id": bot_id_to_remove, "bot_id": new_id})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-# ----------------------
-# Bitrix IM Bot: send message via server bridge (uses auto-refresh tokens)
-# ----------------------
-@app.route("/bot/send", methods=["POST", "GET"]) 
-def bot_send():
-    if request.method == "POST":
-        body = request.get_json(silent=True) or {}
-        dialog_id = body.get("DIALOG_ID") or body.get("dialog_id")
-        message = body.get("MESSAGE") or body.get("message")
-        bot_id = body.get("BOT_ID") or body.get("bot_id") or _bot_state.get("bot_id") or 19510
-    else:
-        dialog_id = request.args.get("DIALOG_ID") or request.args.get("dialog_id")
-        message = request.args.get("MESSAGE") or request.args.get("message")
-        bot_id = request.args.get("BOT_ID") or request.args.get("bot_id") or _bot_state.get("bot_id") or 19510
-
-    if not dialog_id or not message:
-        return jsonify({"ok": False, "error": "dialog_id and message are required"}), 400
-
-    payload = {
-        "BOT_ID": int(bot_id),
-        "DIALOG_ID": dialog_id if isinstance(dialog_id, int) or (isinstance(dialog_id, str) and dialog_id.isdigit()) else str(dialog_id),
-        "MESSAGE": message,
-    }
-    result, err = bitrix_call("imbot.message.add", payload)
-    if err:
-        return jsonify({"ok": False, "error": err}), 400
-    return jsonify({"ok": True, "result": result, "bot_id": str(bot_id), "dialog_id": str(dialog_id)})
-
-@app.route("/bot/diagnose", methods=["GET"]) 
-def bot_diagnose():
-    # Автодиагностика конфигурации бота в портале и опциональная правка
-    want_url = f"{RENDER_URL}/bot/events"
-    try:
-        bot_id = request.args.get("BOT_ID") or request.args.get("bot_id") or _bot_state.get("bot_id") or ""
-        fix = str(request.args.get("fix", "0")).lower() in {"1", "true", "yes"}
-        info = None
-        resolved_bot_id = None
-
-        # Если bot_id известен — попробуем получить его конфиг напрямую
-        if bot_id:
-            rb = int(str(bot_id))
-            info, err = bitrix_call("imbot.bot.get", {"BOT_ID": rb})
-            if not err:
-                resolved_bot_id = rb
-        # Иначе попробуем найти по коду при регистрации
-        if not info:
-            listing, err = bitrix_call("imbot.bot.list", {})
-            if not err and isinstance(listing, list):
-                for b in listing:
-                    code = (b or {}).get("CODE") or (b or {}).get("code")
-                    if str(code).lower() in {"support_bridge_bot", "support_bot", "битрикс_мост"}:
-                        resolved_bot_id = (b or {}).get("BOT_ID") or (b or {}).get("ID")
-                        info = b
-                        break
-
-        if not info:
-            return jsonify({"ok": False, "error": "bot_not_found", "hint": "Передайте BOT_ID или зарегистрируйте бота /bot/register"}), 404
-
-        # Извлечь текущие обработчики
-        props = info.get("PROPERTIES") or {}
-        event_add  = info.get("EVENT_MESSAGE_ADD") or props.get("EVENT_MESSAGE_ADD")
-        event_welc = info.get("EVENT_WELCOME_MESSAGE") or props.get("EVENT_WELCOME_MESSAGE")
-        event_del  = info.get("EVENT_BOT_DELETE") or props.get("EVENT_BOT_DELETE")
-        mismatch = {
-            "EVENT_MESSAGE_ADD": event_add != want_url,
-            "EVENT_WELCOME_MESSAGE": event_welc != want_url,
-            "EVENT_BOT_DELETE": event_del != want_url,
-        }
-
-        result = {
-            "ok": True,
-            "bot_id": resolved_bot_id,
-            "current": {
-                "EVENT_MESSAGE_ADD": event_add,
-                "EVENT_WELCOME_MESSAGE": event_welc,
-                "EVENT_BOT_DELETE": event_del,
-            },
-            "expected": want_url,
-            "mismatch": mismatch,
-            "fix_applied": False,
-        }
-
-        # Опционально — исправить настройки
-        if fix and resolved_bot_id:
-            upd_payload = {
-                "BOT_ID": int(resolved_bot_id),
-                "EVENT_MESSAGE_ADD": want_url,
-                "EVENT_WELCOME_MESSAGE": want_url,
-                "EVENT_BOT_DELETE": want_url,
-            }
-            _upd, upd_err = bitrix_call("imbot.update", upd_payload)
-            result["fix_applied"] = upd_err is None
-            if upd_err:
-                result["fix_error"] = upd_err
-
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-@app.route("/bot/events", methods=["POST", "GET"])
+@app.route("/bot/events", methods=["POST", "GET"]) 
 def bot_events():
     if request.method == "GET":
         return jsonify({"ok": True, "message": "bot events endpoint is up"})
@@ -793,12 +696,11 @@ def chat_bind():
     _task_to_chat_map[str(task_id)] = str(chat_id)
     return jsonify({"ok": True, "bound": {"chat_id": chat_id, "task_id": task_id}})
 
- 
 
 # ----------------------
 # Любые другие пути — для отладки
 # ----------------------
-@app.route("/<path:unknown>", methods=["GET", "POST"])
+@app.route("/<path:unknown>", methods=["GET", "POST"]) 
 def catch_all(unknown):
     return f"❌ Путь '{unknown}' не обрабатывается этим сервером.", 404
 
