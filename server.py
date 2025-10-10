@@ -116,9 +116,16 @@ def install():
         }), 500
 
 # Альтернативный путь для совместимости с документацией
-@app.route("/oauth/install")
+@app.route("/oauth/install", methods=["GET", "POST"]) 
+@app.route("/oauth/install/", methods=["GET", "POST"]) 
 def oauth_install():
-    return install()
+    """Bitrix calls this path on initial install check. Always return 200 OK."""
+    # Optionally log incoming params for troubleshooting
+    try:
+        print("🔔 /oauth/install called", {"args": request.args.to_dict(), "method": request.method})
+    except Exception:
+        pass
+    return jsonify({"ok": True, "message": "Install endpoint is up"})
 
 # Redirect common typo to the correct endpoint
 @app.route("/oauth/introspe", methods=["GET"]) 
