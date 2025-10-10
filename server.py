@@ -69,6 +69,8 @@ def root():
             <div class=\"status\">✅ Bitrix Bot Server работает!</div>
             <div class=\"links\">
                 <a href=\"/oauth/status\">/oauth/status</a>
+                <a href=\"/oauth/introspect\">/oauth/introspect</a>
+                <a href=\"/oauth/install\">/oauth/install</a>
                 <a href=\"/bot/status\">/bot/status</a>
                 <a href=\"/debug/mappings\">/debug/mappings</a>
             </div>
@@ -108,6 +110,11 @@ def install():
 @app.route("/oauth/install")
 def oauth_install():
     return install()
+
+# Redirect common typo to the correct endpoint
+@app.route("/oauth/introspe", methods=["GET"]) 
+def oauth_introspe_alias():
+    return redirect("/oauth/introspect", code=302)
 
 
 # ----------------------
