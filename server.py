@@ -28,6 +28,14 @@ BITRIX_ENV_ACCESS_TOKEN = os.getenv("BITRIX_ACCESS_TOKEN")
 BITRIX_ENV_REFRESH_TOKEN = os.getenv("BITRIX_REFRESH_TOKEN")
 BITRIX_ENV_REST_BASE = os.getenv("BITRIX_REST_BASE")  # e.g. https://dom.mesopharm.ru/rest/
 
+# Параметры для бота 19519
+BITRIX_BOT_ID = os.getenv("BITRIX_BOT_ID", "19519")
+BITRIX_BOT_CLIENT_ID = os.getenv("BITRIX_BOT_CLIENT_ID", "yxvrh4egl3aex5byvj1tl9q9s38638nw")
+BITRIX_BOT_CODE = os.getenv("BITRIX_BOT_CODE", "s3mnagxacv46l8ln")
+BITRIX_BOT_NAME = os.getenv("BITRIX_BOT_NAME", "Бот Тест")
+BITRIX_REST_API_URL = os.getenv("BITRIX_REST_API_URL", "https://dom.mesopharm.ru/rest/19508/i954zqjiioywm5gm/")
+BITRIX_WEBHOOK_TOKEN = os.getenv("BITRIX_WEBHOOK_TOKEN", "7qpikl02vedc6so1utbrdjc400iwp7z4")
+
 # ----------------------
 # Лог всех входящих запросов
 # ----------------------
@@ -320,12 +328,15 @@ def load_oauth_tokens():
 
 
 def bitrix_call(method: str, payload: dict):
-    access_token, rest_base, _ = load_oauth_tokens()
-    if not access_token or not rest_base:
-        return None, {"error": "missing_tokens", "error_description": "Нет OAuth токенов или REST базы"}
+    # Используем REST API из переменных окружения
+    rest_base = BITRIX_REST_API_URL
     url = f"{rest_base}{method}"
     try:
-        r = requests.post(url, params={"auth": access_token}, json=payload, timeout=15)
+        # Добавляем токен вебхука если нужно
+        params = {}
+        if BITRIX_WEBHOOK_TOKEN:
+            params["auth"] = BITRIX_WEBHOOK_TOKEN
+        r = requests.post(url, params=params, json=payload, timeout=15)
         # Try to parse error body even on non-2xx to detect expired_token
         if r.status_code >= 400:
             err_text = r.text or ""
@@ -398,29 +409,11 @@ def bitrix_call(method: str, payload: dict):
 # ----------------------
 
 def register_bot() -> str | None:
-    payload = {
-        "CODE": "support_bridge_bot",
-        "TYPE": "HUMAN",
-        "EVENT_MESSAGE_ADD": f"{RENDER_URL}/bot/events",
-        "EVENT_WELCOME_MESSAGE": f"{RENDER_URL}/bot/events",
-        "EVENT_BOT_DELETE": f"{RENDER_URL}/bot/events",
-        "OPENLINE": "N",
-        "PROPERTIES": {
-            "NAME": "Бот техподдержки (мост)",
-            "COLOR": "GRAY",
-        },
-    }
-    result, err = bitrix_call("imbot.register", payload)
-    if err:
-        print("⚠️ Ошибка регистрации бота:", err)
-        return None
-    bot_id = None
-    if isinstance(result, dict):
-        bot_id = result.get("BOT_ID") or result.get("bot_id") or result.get("result")
-    else:
-        bot_id = result
-    _bot_state["bot_id"] = str(bot_id) if bot_id is not None else None
-    return _bot_state["bot_id"]
+    # Используем существующий бот ID из переменных окружения
+    bot_id = BITRIX_BOT_ID
+    _bot_state["bot_id"] = bot_id
+    print(f"✅ Используем существующий бот ID: {bot_id} (Код: {BITRIX_BOT_CODE}, Название: {BITRIX_BOT_NAME})")
+    return bot_id
 
 
 # ----------------------
@@ -740,7 +733,7 @@ def bot_events():
         except Exception:
             pass
 
-    print("\n====== 📥 ПРИШЛО СООБЩЕНИЕ ОТ BITRIX ======")
+    print(f"\n====== 📥 ПРИШЛО СООБЩЕНИЕ ОТ BITRIX БОТА {BITRIX_BOT_ID} ({BITRIX_BOT_NAME}) ======")
     print(json.dumps(body, ensure_ascii=False, indent=2))
     print("===========================================\n")
 
@@ -759,7 +752,7 @@ def bot_events():
         from_id = msg.get("FROM_USER_ID") or data.get("FROM_USER_ID")
 
         if event == "ONIMBOTMESSAGEADD" and text and TELEGRAM_BOT_TOKEN and TELEGRAM_NOTIFY_CHAT_ID:
-            caption = f"Сообщение из Bitrix (dialog={dialog_id}, from={from_id}):\n{text}"
+            caption = f"Сообщение от бота {BITRIX_BOT_ID} ({BITRIX_BOT_NAME}) (dialog={dialog_id}, from={from_id}):\n{text}"
             try:
                 r = requests.post(
                     f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
@@ -923,26 +916,27 @@ def list_routes():
 # Ensure /bot/send exists
 @app.route("/bot/send", methods=["POST", "GET"]) 
 def bot_send_route():
-    # Delegate to existing logic (same as earlier bot_send)
+    # Используем бот ID из переменных окружения
     if request.method == "POST":
         body = request.get_json(silent=True) or {}
         dialog_id = body.get("DIALOG_ID") or body.get("dialog_id")
         message = body.get("MESSAGE") or body.get("message")
-        bot_id = body.get("BOT_ID") or body.get("bot_id") or _bot_state.get("bot_id") or 19510
+        bot_id = body.get("BOT_ID") or body.get("bot_id") or BITRIX_BOT_ID
     else:
         dialog_id = request.args.get("DIALOG_ID") or request.args.get("dialog_id")
         message = request.args.get("MESSAGE") or request.args.get("message")
-        bot_id = request.args.get("BOT_ID") or request.args.get("bot_id") or _bot_state.get("bot_id") or 19510
+        bot_id = request.args.get("BOT_ID") or request.args.get("bot_id") or BITRIX_BOT_ID
 
     if not dialog_id or not message:
         return jsonify({"ok": False, "error": "dialog_id and message are required"}), 400
 
     payload = {
-        "BOT_ID": int(bot_id),
-        "DIALOG_ID": dialog_id if isinstance(dialog_id, int) or (isinstance(dialog_id, str) and dialog_id.isdigit()) else str(dialog_id),
+        "BOT_ID": bot_id,
+        "CLIENT_ID": BITRIX_BOT_CLIENT_ID,
+        "DIALOG_ID": str(dialog_id),
         "MESSAGE": message,
     }
-    result, err = bitrix_call("imbot.message.add", payload)
+    result, err = bitrix_call("im.message.add", payload)
     if err:
         return jsonify({"ok": False, "error": err}), 400
     return jsonify({"ok": True, "result": result, "bot_id": str(bot_id), "dialog_id": str(dialog_id)})
