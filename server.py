@@ -83,66 +83,40 @@ def root():
 
 # ----------------------
 # === /install — установка из Bitrix ===
-@app.route("/install", methods=["GET", "POST"])
+@app.route("/install", methods=["POST", "GET"])
 def install():
-    """
-    Эндпоинт вызывается при установке приложения в Bitrix24.
-    Bitrix передаёт параметр CODE (авторизационный код)
-    """
-    code = request.args.get("code") or request.form.get("CODE")
-
-    if not code:
-        return jsonify({"error": "No CODE parameter"}), 400
-
-    # Обмениваем code → access_token
-    token_url = f"{BITRIX_DOMAIN}/oauth/token/"
-    data = {
-        "grant_type": "authorization_code",
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-        "code": code,
-        "redirect_uri": REDIRECT_URI,
-    }
-    r = requests.post(token_url, data=data)
     try:
-        token_data = r.json()
-    except Exception:
-        return jsonify({"error": "Invalid response", "raw": r.text}), 500
+        # Bitrix передаёт параметры в query string
+        domain = request.args.get("DOMAIN")
+        protocol = request.args.get("PROTOCOL", "1")
+        lang = request.args.get("LANG", "ru")
+        app_sid = request.args.get("APP_SID")
 
-    # Сохраняем токен локально
-    with open(ACCESS_TOKEN_FILE, "w") as f:
-        json.dump(token_data, f)
+        if not domain:
+            return jsonify({"ok": False, "error": "Missing DOMAIN"}), 400
 
-    access_token = token_data.get("access_token")
-    if not access_token:
-        return jsonify({"error": "No access_token", "response": token_data}), 400
+        # Логирование для отладки
+        print("📦 Install called from:", domain, "APP_SID:", app_sid)
 
-    # === Регистрируем бота ===
-    payload = {
-        "CODE": "support_bridge_bot",
-        "TYPE": "HUMAN",
-        "EVENT_MESSAGE_ADD": f"{RENDER_URL}/bot/events",
-        "EVENT_WELCOME_MESSAGE": f"{RENDER_URL}/bot/events",
-        "EVENT_BOT_DELETE": f"{RENDER_URL}/bot/events",
-        "OPENLINE": "N",
-        "PROPERTIES": {
-            "NAME": "Бот техподдержки (мост)",
-            "COLOR": "GRAY",
-        },
-    }
-    result, err = bitrix_call("imbot.register", payload, token=access_token)
-    if err:
-        return jsonify({"error": err}), 500
+        # Формируем URL приложения для Bitrix (где у тебя events и прочее)
+        install_url = f"{RENDER_URL}/"
 
-    bot_id = str(result.get("BOT_ID") if isinstance(result, dict) else result)
-    _bot_state["bot_id"] = bot_id
+        # Возвращаем JSON с настройками для Bitrix
+        return jsonify({
+            "result": "success",
+            "data": {
+                "install": True,
+                "url": install_url,
+                "domain": domain,
+                "lang": lang,
+                "protocol": protocol,
+            },
+            "ok": True
+        }), 200
 
-    return jsonify({
-        "ok": True,
-        "bot_id": bot_id,
-        "token": access_token,
-        "raw": result
-    })
+    except Exception as e:
+        print("❌ Ошибка install:", e)
+        return jsonify({"ok": False, "error": str(e)}), 400
 
 # Альтернативный путь для совместимости с документацией
 @app.route("/oauth/install")
