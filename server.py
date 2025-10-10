@@ -46,6 +46,15 @@ def log_request_info():
 # ----------------------
 @app.route("/", methods=["GET", "POST"])
 def root():
+    # If Bitrix returned here with OAuth params (code, domain, etc.), forward to the proper callback
+    if request.method == "GET" and (request.args.get("code") or request.args.get("DOMAIN") or request.args.get("domain")):
+        # Preserve the full original query string
+        qs = request.query_string.decode("utf-8") if request.query_string else ""
+        target = "/oauth/bitrix/callback"
+        if qs:
+            target = f"{target}?{qs}"
+        return redirect(target, code=302)
+
     if request.method == "POST":
         domain = request.args.get("DOMAIN")
         app_sid = request.args.get("APP_SID")
