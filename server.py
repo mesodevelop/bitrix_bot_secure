@@ -510,6 +510,7 @@ def bitrix_events():
                 json={"chat_id": chat_id, "text": f"Комментарий к задаче #{task_id}:\n{text}"},
                 timeout=10,
             )
+            print("🔔 Telegram send status:", r.status_code, r.text)
             r.raise_for_status()
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
