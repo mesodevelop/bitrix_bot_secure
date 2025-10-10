@@ -12,6 +12,7 @@ _memory_token_cache = {
 _task_to_chat_map: dict[str, str] = {}
 _chat_to_task_map: dict[str, str] = {}
 _bot_state: dict[str, str | None] = {"bot_id": None}
+_did_bootstrap = False
 
 # Загружаем переменные окружения
 CLIENT_ID = os.getenv("BITRIX_CLIENT_ID")
@@ -785,11 +786,10 @@ def find_bot_id_by_code(code: str) -> str | None:
 
 
 # ----------------------
-# Automatic bootstrap on first request
+# Automatic bootstrap (run once on first incoming request)
 # ----------------------
 
-@app.before_first_request
-def auto_bootstrap():
+def _auto_bootstrap():
     try:
         print("⚙️ Bootstrap: validating token and bot configuration...")
         access_token, rest_base, raw = load_oauth_tokens()
@@ -854,6 +854,12 @@ def auto_bootstrap():
     except Exception as e:
         print("⚠️ Bootstrap exception:", e)
 
+@app.before_request
+def _maybe_run_bootstrap_once():
+    global _did_bootstrap
+    if not _did_bootstrap:
+        _did_bootstrap = True
+        _auto_bootstrap()
 
 # ----------------------
 # Любые другие пути — для отладки
