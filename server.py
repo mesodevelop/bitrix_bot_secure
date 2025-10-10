@@ -447,6 +447,17 @@ def oauth_token_view():
     masked = token if show_full else (token[:6] + "..." + token[-6:])
     return jsonify({"has_access_token": True, "access_token": masked, "full": show_full})
 
+@app.route("/oauth/refresh_token", methods=["GET"]) 
+def oauth_refresh_token_view():
+    """Show masked refresh token. Pass full=1 to return full token (use cautiously)."""
+    raw = _memory_token_cache.get("raw") or {}
+    token = raw.get("refresh_token") or os.getenv("BITRIX_REFRESH_TOKEN")
+    if not token:
+        return jsonify({"has_refresh_token": False}), 404
+    show_full = str(request.args.get("full", "0")).lower() in {"1", "true", "yes"}
+    masked = token if show_full else (token[:6] + "..." + token[-6:])
+    return jsonify({"has_refresh_token": True, "refresh_token": masked, "full": show_full})
+
 @app.route("/oauth/introspect", methods=["GET"]) 
 def oauth_introspect():
     """Call app.info with current token to verify validity and scopes (without showing the token)."""
@@ -756,6 +767,92 @@ def chat_bind():
     _chat_to_task_map[str(chat_id)] = str(task_id)
     _task_to_chat_map[str(task_id)] = str(chat_id)
     return jsonify({"ok": True, "bound": {"chat_id": chat_id, "task_id": task_id}})
+
+
+# ----------------------
+# Helpers: find existing bot by CODE
+# ----------------------
+
+def find_bot_id_by_code(code: str) -> str | None:
+    listing, err = bitrix_call("imbot.bot.list", {})
+    if err or not isinstance(listing, list):
+        return None
+    for b in listing:
+        bcode = (b or {}).get("CODE") or (b or {}).get("code")
+        if str(bcode).lower() == str(code).lower():
+            return str((b or {}).get("BOT_ID") or (b or {}).get("ID"))
+    return None
+
+
+# ----------------------
+# Automatic bootstrap on first request
+# ----------------------
+
+@app.before_first_request
+def auto_bootstrap():
+    try:
+        print("⚙️ Bootstrap: validating token and bot configuration...")
+        access_token, rest_base, raw = load_oauth_tokens()
+        if not access_token or not rest_base:
+            print("⚠️ Bootstrap: no access token/rest base; set BITRIX_ACCESS_TOKEN/BITRIX_REST_BASE or complete OAuth.")
+            return
+        # Introspect token
+        try:
+            r = requests.get(f"{rest_base}app.info", params={"auth": access_token}, timeout=10)
+            info = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+            if not r.ok:
+                print("⚠️ Bootstrap: app.info not ok:", r.status_code, info)
+                return
+        except Exception as e:
+            print("⚠️ Bootstrap: app.info request failed:", e)
+            return
+        # Ensure scopes
+        scopes = []
+        try:
+            res = info.get("result") or {}
+            scopes = res.get("scope") or res.get("SCOPE") or []
+            if isinstance(scopes, str):
+                scopes = [s.strip() for s in scopes.split(",") if s.strip()]
+            scopes = [s.lower() for s in scopes]
+        except Exception:
+            scopes = []
+        if not ("imbot" in scopes and "im" in scopes):
+            print("⚠️ Bootstrap: required scopes imbot/im are missing; grant scopes in app and re-auth.")
+            return
+        # Ensure bot
+        desired_code = "support_bridge_bot"
+        current_id = _bot_state.get("bot_id")
+        if not current_id:
+            found = find_bot_id_by_code(desired_code)
+            if found:
+                _bot_state["bot_id"] = found
+                print("✅ Bootstrap: found existing bot_id:", found)
+        # Register if still missing
+        if not _bot_state.get("bot_id"):
+            new_id = register_bot()
+            if new_id:
+                print("✅ Bootstrap: bot registered:", new_id)
+            else:
+                print("⚠️ Bootstrap: bot registration failed; try manual /bot/register after fixing scopes.")
+                return
+        # Update events to point to our /bot/events
+        try:
+            bot_id_int = int(str(_bot_state.get("bot_id")))
+        except Exception:
+            bot_id_int = None
+        if bot_id_int is not None:
+            fields = {
+                "EVENT_MESSAGE_ADD": f"{RENDER_URL}/bot/events",
+                "EVENT_WELCOME_MESSAGE": f"{RENDER_URL}/bot/events",
+                "EVENT_BOT_DELETE": f"{RENDER_URL}/bot/events",
+            }
+            _upd, upd_err = bitrix_call("imbot.update", {"BOT_ID": bot_id_int, "FIELDS": fields})
+            if upd_err:
+                print("⚠️ Bootstrap: imbot.update failed:", upd_err)
+            else:
+                print("✅ Bootstrap: bot events updated")
+    except Exception as e:
+        print("⚠️ Bootstrap exception:", e)
 
 
 # ----------------------
