@@ -765,6 +765,7 @@ def bot_events():
             body["data"] = json.loads(body["data"])  # type: ignore[index]
         except Exception:
             pass
+    print("📩 Bitrix event body:", body)
     event = (body.get("event") or body.get("event_name") or request.values.get("event") or request.values.get("event_name"))
     data = body.get("data") or {}
     # Поддержка разных форматов Bitrix: MESSAGE может быть строкой или объектом
